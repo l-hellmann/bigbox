@@ -10,6 +10,9 @@ pub mod stats;
 
 pub use affix::{Affix, AffixSlot, AffixTier, StatRoll};
 pub use aggregate::aggregate_item;
-pub use combat::{Combatant, Weapon, dps_against, expected_hit_damage, time_to_kill};
+pub use combat::{
+    Combatant, FightOutcome, FightState, Fighter, HitResult, Weapon, dps_against,
+    expected_hit_damage, resolve_hit, simulate_fight, time_to_kill,
+};
 pub use item::{BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix};
 pub use stats::{Modifier, ModifierKind, StatId, aggregate};
