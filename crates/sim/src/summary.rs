@@ -23,6 +23,10 @@ struct RaritySum {
 struct BaseSum {
     count: u32,
     sum_dps: f64,
+    /// TTK is only meaningful for weapons. Track separately so non-weapons
+    /// don't drag the average toward zero.
+    weapon_count: u32,
+    sum_ttk: f64,
 }
 
 struct AffixTierSum {
@@ -70,7 +74,7 @@ impl Summary {
         }
     }
 
-    pub fn record(&mut self, item: &ItemInstance, dps: f32) {
+    pub fn record(&mut self, item: &ItemInstance, dps: f32, ttk: f32) {
         self.drops += 1;
         let n_affixes = (item.prefixes.len() + item.suffixes.len()) as u64;
         let rs = &mut self.rarities[item.rarity.index()];
@@ -80,6 +84,10 @@ impl Summary {
         let base = self.by_base.entry(item.base.clone()).or_default();
         base.count += 1;
         base.sum_dps += dps as f64;
+        if ttk > 0.0 {
+            base.weapon_count += 1;
+            base.sum_ttk += ttk as f64;
+        }
 
         for a in item.prefixes.iter().chain(item.suffixes.iter()) {
             let entry = self
@@ -142,8 +150,8 @@ impl Summary {
 
         writeln!(
             out,
-            "{:<20} {:>8} {:>8} {:>10}",
-            "Base", "count", "pct", "avg_dps"
+            "{:<20} {:>8} {:>8} {:>10} {:>10}",
+            "Base", "count", "pct", "avg_dps", "avg_ttk"
         )?;
         for (base, sum) in &self.by_base {
             let pct = pct_of(sum.count as f64, self.drops as f64);
@@ -152,10 +160,15 @@ impl Summary {
             } else {
                 0.0
             };
+            let ttk_cell = if sum.weapon_count > 0 {
+                format!("{:>10.3}", sum.sum_ttk / sum.weapon_count as f64)
+            } else {
+                format!("{:>10}", "—")
+            };
             writeln!(
                 out,
-                "{:<20} {:>8} {:>7.2}% {:>10.2}",
-                base, sum.count, pct, avg_dps
+                "{:<20} {:>8} {:>7.2}% {:>10.2} {}",
+                base, sum.count, pct, avg_dps, ttk_cell
             )?;
         }
         writeln!(out)?;

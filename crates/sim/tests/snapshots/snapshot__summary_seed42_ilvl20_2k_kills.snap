@@ -12,14 +12,14 @@ Rare            162    8.10%           3.49
 Epic             44    2.20%           4.57
 Legendary         8    0.40%           0.00
 
-Base                    count      pct    avg_dps
-combat_boots              282   14.10%       0.00
-combat_helmet             310   15.50%       0.00
-pistol                    271   13.55%      61.34
-rocket_launcher           266   13.30%      57.41
-shotgun                   303   15.15%      67.52
-smg                       273   13.65%      92.51
-tactical_vest             295   14.75%       0.00
+Base                    count      pct    avg_dps    avg_ttk
+combat_boots              282   14.10%       0.00          —
+combat_helmet             310   15.50%       0.00          —
+pistol                    271   13.55%      61.34      4.367
+rocket_launcher           266   13.30%      57.41      4.269
+shotgun                   303   15.15%      67.52      4.718
+smg                       273   13.65%      92.51      4.695
+tactical_vest             295   14.75%       0.00          —
 
 Affix                    tier    count   avg_roll   theoretical_range   fill_pct
 crit_chance              T3         30      0.254 [   0.20,    0.30]      53.5%

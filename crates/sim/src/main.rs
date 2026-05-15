@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use h2b_core::{
     BaseItem, Combatant, ItemInstance, Rarity, StatId, Weapon, aggregate_item, dps_against,
-    item::RolledAffix, roll::roll_item,
+    item::RolledAffix, roll::roll_item, time_to_kill,
 };
 
 mod summary;
@@ -47,18 +47,21 @@ fn main() -> anyhow::Result<()> {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
             let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
-            let dps = weapon_dps(&stats);
-            sum.record(&item, dps);
+            let m = ItemMetrics::from_stats(&stats);
+            sum.record(&item, m.dps, m.ttk);
         }
         sum.print(&mut out, &affixes, args.seed, args.monster_level)?;
     } else {
-        writeln!(out, "kill,rarity,base,ilvl,n_affixes,dps_estimate,affixes")?;
+        writeln!(
+            out,
+            "kill,rarity,base,ilvl,n_affixes,dps_estimate,ttk_estimate,affixes"
+        )?;
         for kill in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
             let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
-            let dps = weapon_dps(&stats);
-            write_row(&mut out, kill, &item, dps)?;
+            let m = ItemMetrics::from_stats(&stats);
+            write_row(&mut out, kill, &item, m.dps, m.ttk)?;
         }
     }
 
@@ -82,20 +85,51 @@ fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
     }
 }
 
-/// Weapon DPS against a naked baseline target (no armor, no evasion).
-/// Crit and damage-type aggregation live in `core::combat` — this is just the
-/// sim's normalized comparison metric. Armor items naturally return 0
-/// (no fire rate → no DPS).
-fn weapon_dps(stats: &HashMap<StatId, f32>) -> f32 {
-    let weapon = Weapon::from_stats(stats);
-    dps_against(&weapon, &Combatant::dummy(1.0))
+/// Benchmark target for TTK measurement. Modest armor exercises mitigation
+/// math without disproportionately punishing any archetype; the curve from
+/// `armor / (armor + 10 × hit)` means big-hit weapons (shotgun/rocket) and
+/// small-hit weapons (SMG/pistol) settle into different effective DPS.
+fn benchmark_enemy() -> Combatant {
+    Combatant {
+        max_life: 200.0,
+        current_life: 200.0,
+        armor: 30.0,
+        evasion: 0.0,
+    }
 }
 
-fn write_row<W: Write>(out: &mut W, kill: u32, item: &ItemInstance, dps: f32) -> io::Result<()> {
+#[derive(Clone, Copy)]
+struct ItemMetrics {
+    /// Weapon DPS against a naked target — pure weapon power baseline.
+    dps: f32,
+    /// Time-to-kill the benchmark zombie. 0 for non-weapons.
+    ttk: f32,
+}
+
+impl ItemMetrics {
+    fn from_stats(stats: &HashMap<StatId, f32>) -> Self {
+        let weapon = Weapon::from_stats(stats);
+        let dps = dps_against(&weapon, &Combatant::dummy(1.0));
+        let ttk = if dps > 0.0 {
+            time_to_kill(&weapon, &benchmark_enemy()).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        Self { dps, ttk }
+    }
+}
+
+fn write_row<W: Write>(
+    out: &mut W,
+    kill: u32,
+    item: &ItemInstance,
+    dps: f32,
+    ttk: f32,
+) -> io::Result<()> {
     let n = item.prefixes.len() + item.suffixes.len();
     write!(
         out,
-        "{kill},{rarity:?},{base},{ilvl},{n},{dps:.2},",
+        "{kill},{rarity:?},{base},{ilvl},{n},{dps:.2},{ttk:.3},",
         rarity = item.rarity,
         base = item.base,
         ilvl = item.ilvl,
