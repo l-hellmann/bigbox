@@ -1,0 +1,82 @@
+// Starter affix set. Tiers numbered T1 (best) → T4 (worst); ilvl_required
+// gates availability; weight controls relative frequency within the affix.
+[
+    (
+        id: "flat_phys_damage",
+        name_fragment: "Sharp",
+        slot: prefix,
+        group: "phys_dmg_flat",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "physical_damage", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "physical_damage", kind: flat, min: 10.0, max: 15.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "physical_damage", kind: flat, min: 15.0, max: 20.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "physical_damage", kind: flat, min: 20.0, max: 30.0)]),
+        ],
+    ),
+    (
+        id: "increased_phys_damage",
+        name_fragment: "Heavy",
+        slot: prefix,
+        group: "phys_dmg_inc",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "physical_damage", kind: increased, min: 0.20, max: 0.35)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "physical_damage", kind: increased, min: 0.35, max: 0.50)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "physical_damage", kind: increased, min: 0.50, max: 0.70)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "physical_damage", kind: increased, min: 0.70, max: 1.00)]),
+        ],
+    ),
+    (
+        id: "flat_life",
+        name_fragment: "Stout",
+        slot: prefix,
+        group: "life_flat",
+        allowed_categories: ["helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "life", kind: flat, min: 20.0, max:  40.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "life", kind: flat, min: 40.0, max:  60.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "life", kind: flat, min: 60.0, max:  80.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "life", kind: flat, min: 80.0, max: 110.0)]),
+        ],
+    ),
+    (
+        id: "fire_resistance",
+        name_fragment: "of the Salamander",
+        slot: suffix,
+        group: "fire_res",
+        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_resistance", kind: flat, min:  6.0, max: 12.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_resistance", kind: flat, min: 12.0, max: 20.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "fire_resistance", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_resistance", kind: flat, min: 30.0, max: 40.0)]),
+        ],
+    ),
+    (
+        id: "attack_speed",
+        name_fragment: "of Speed",
+        slot: suffix,
+        group: "attack_speed",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "attack_speed", kind: more, min: 0.05, max: 0.08)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "attack_speed", kind: more, min: 0.08, max: 0.12)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "attack_speed", kind: more, min: 0.12, max: 0.17)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "attack_speed", kind: more, min: 0.17, max: 0.25)]),
+        ],
+    ),
+    (
+        id: "crit_chance",
+        name_fragment: "of Striking",
+        slot: suffix,
+        group: "crit_chance",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "crit_chance", kind: increased, min: 0.10, max: 0.20)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "crit_chance", kind: increased, min: 0.20, max: 0.30)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "crit_chance", kind: increased, min: 0.30, max: 0.45)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "crit_chance", kind: increased, min: 0.45, max: 0.65)]),
+        ],
+    ),
+]

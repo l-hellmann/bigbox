@@ -1,0 +1,23 @@
+[
+    (
+        id: "pistol",
+        name: "Pistol",
+        category: "weapon",
+        slot: "weapon",
+        affix_pool: "weapon",
+    ),
+    (
+        id: "shotgun",
+        name: "Shotgun",
+        category: "weapon",
+        slot: "weapon",
+        affix_pool: "weapon",
+    ),
+    (
+        id: "leather_helm",
+        name: "Leather Helm",
+        category: "helm",
+        slot: "helm",
+        affix_pool: "armor",
+    ),
+]

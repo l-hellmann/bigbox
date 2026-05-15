@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core"]
+members = ["crates/core", "crates/content", "crates/sim"]
 
 [workspace.package]
 edition = "2024"
@@ -12,3 +12,6 @@ license = "MIT OR Apache-2.0"
 serde = { version = "1", features = ["derive"] }
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 thiserror = "1"
+ron = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

@@ -1,0 +1,16 @@
+[package]
+name = "head2box-content"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "RON content (affixes, base items, enemies, drop tables) and loaders for head2box."
+
+[lib]
+name = "h2b_content"
+
+[dependencies]
+head2box-core = { path = "../core" }
+serde = { workspace = true }
+ron = { workspace = true }
+thiserror = { workspace = true }

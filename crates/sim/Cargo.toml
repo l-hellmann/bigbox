@@ -1,0 +1,18 @@
+[package]
+name = "head2box-sim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI loot simulator — dumps M drops at monster-level N from seed S to CSV on stdout."
+
+[[bin]]
+name = "h2b-sim"
+path = "src/main.rs"
+
+[dependencies]
+head2box-core = { path = "../core" }
+head2box-content = { path = "../content" }
+rand = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
