@@ -21,6 +21,11 @@ pub struct Enemy {
     pub max_life: f32,
     pub armor: f32,
     pub evasion: f32,
+    /// XP awarded to the player on kill. See `core::progression` for the
+    /// curve. Defaults to 0 so missing values fail safe — content errors
+    /// surface as "no XP gained" instead of accidental free progress.
+    #[serde(default)]
+    pub xp_value: u32,
 }
 
 impl Enemy {
@@ -48,6 +53,7 @@ mod tests {
             max_life: 120.0,
             armor: 15.0,
             evasion: 5.0,
+            xp_value: 25,
         };
         let c = e.as_combatant();
         assert_eq!(c.max_life, 120.0);

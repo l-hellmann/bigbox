@@ -7,6 +7,7 @@ pub mod attach;
 pub mod combat;
 pub mod enemy;
 pub mod item;
+pub mod progression;
 pub mod roll;
 pub mod stats;
 pub mod upgrade;
