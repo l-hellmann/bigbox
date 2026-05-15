@@ -2,20 +2,24 @@
 //   Weapons: 4 archetypes — pistol, shotgun, SMG, rocket launcher
 //   Armor:   3 slots      — helm, chest, boots
 //
+// Weapons split into two archetype categories so flat-damage affixes can be
+// scaled per class (a +10 flat-damage roll is 100 DPS on an SMG vs 5 DPS on a
+// rocket — affixes have to compensate, not the base damage):
+//   rapid_fire — pistol, SMG  (low per-shot damage, high fire rate)
+//   heavy      — shotgun, rocket_launcher (high per-shot, low fire rate)
+//
 // Intrinsic stats below are *base* values in the three-tier stat formula —
-// affixes layer on top. Weapon DPS at zero affixes:
+// affixes layer on top. Zero-affix DPS:
 //   pistol           = damage 12  × rate 4.0  = 48
 //   shotgun          = damage 36  × rate 1.0  = 36
 //   smg              = damage  8  × rate 10.0 = 80
 //   rocket_launcher  = damage 80  × rate 0.5  = 40
-// Spread is intentional — different archetypes win in different scenarios
-// once affix scaling kicks in. Retune via sim once combat math lands.
 [
-    // ---------- weapons ----------
+    // ---------- rapid-fire weapons ----------
     (
         id: "pistol",
         name: "Pistol",
-        category: "weapon",
+        category: "rapid_fire",
         slot: "weapon",
         intrinsic_stats: [
             (stat: "weapon_damage", value: 12.0),
@@ -25,9 +29,23 @@
         ],
     ),
     (
+        id: "smg",
+        name: "SMG",
+        category: "rapid_fire",
+        slot: "weapon",
+        intrinsic_stats: [
+            (stat: "weapon_damage", value:  8.0),
+            (stat: "fire_rate",     value: 10.0),
+            (stat: "magazine_size", value: 30.0),
+            (stat: "reload_time",   value:  2.0),
+        ],
+    ),
+
+    // ---------- heavy weapons ----------
+    (
         id: "shotgun",
         name: "Shotgun",
-        category: "weapon",
+        category: "heavy",
         slot: "weapon",
         intrinsic_stats: [
             (stat: "weapon_damage", value: 36.0),
@@ -37,21 +55,9 @@
         ],
     ),
     (
-        id: "smg",
-        name: "SMG",
-        category: "weapon",
-        slot: "weapon",
-        intrinsic_stats: [
-            (stat: "weapon_damage", value:  8.0),
-            (stat: "fire_rate",     value: 10.0),
-            (stat: "magazine_size", value: 30.0),
-            (stat: "reload_time",   value:  2.0),
-        ],
-    ),
-    (
         id: "rocket_launcher",
         name: "Rocket Launcher",
-        category: "weapon",
+        category: "heavy",
         slot: "weapon",
         intrinsic_stats: [
             (stat: "weapon_damage", value: 80.0),

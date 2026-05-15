@@ -6,20 +6,26 @@
 // weight controls relative frequency within the affix. Curve across tiers:
 // weight 1000/600/300/100 at ilvl 1/20/40/60.
 //
-// Pool shape (matters for rare affix-count target of 3-4 / Epic 4-5 / Leg 5-6):
-//   Weapon prefix groups: 5 (bullet/AP/incendiary/explosive flat + weapon_dmg inc)
-//   Weapon suffix groups: 3 (fire rate + crit chance + crit damage)
-//                        + 4 universal suffixes available below
-//   Armor prefix groups:  4 (life + armor + evasion + thorns)
-//   Armor suffix groups:  4 universal (regen + melee/ranged reduction + move spd)
+// Weapon affixes are split by archetype because flat damage scales with fire
+// rate — a +10 flat bullet roll is 100 DPS on an SMG and 5 DPS on a rocket.
+// Rapid-fire damage affixes (pistol/SMG) keep small per-shot values; heavy
+// damage affixes (shotgun/rocket) carry ~10× values so per-second DPS lines up.
+//
+// Pool shape (relevant for rare affix-count target 3-4 / Epic 4-5 / Leg 5-6):
+//   rapid_fire prefix groups: 5 (4 rapid damage + weapon_damage inc)
+//   heavy prefix groups:      5 (4 heavy damage  + weapon_damage inc)
+//   weapon suffix groups:     3 (fire rate, crit chance, crit damage)
+//                             + 4 universal suffixes below
+//   Armor prefix groups:      4 (life, armor, evasion, thorns)
+//   Armor suffix groups:      4 universal (regen + melee/ranged red + move spd)
 [
-    // ---------- weapon prefixes ----------
+    // ---------- rapid-fire weapon prefixes ----------
     (
         id: "flat_bullet_damage",
         name_fragment: "Hollow-Point",
         slot: prefix,
         group: "bullet_dmg_flat",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "bullet_damage", kind: flat, min:  5.0, max: 10.0)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "bullet_damage", kind: flat, min: 10.0, max: 15.0)]),
@@ -28,24 +34,11 @@
         ],
     ),
     (
-        id: "increased_weapon_damage",
-        name_fragment: "Heavy",
-        slot: prefix,
-        group: "weapon_dmg_inc",
-        allowed_categories: ["weapon"],
-        tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "weapon_damage", kind: increased, min: 0.20, max: 0.35)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "weapon_damage", kind: increased, min: 0.35, max: 0.50)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "weapon_damage", kind: increased, min: 0.50, max: 0.70)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "weapon_damage", kind: increased, min: 0.70, max: 1.00)]),
-        ],
-    ),
-    (
         id: "flat_incendiary_damage",
         name_fragment: "Incendiary",
         slot: prefix,
         group: "incendiary_dmg_flat",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "incendiary_damage", kind: flat, min:  5.0, max: 10.0)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "incendiary_damage", kind: flat, min: 10.0, max: 15.0)]),
@@ -58,7 +51,7 @@
         name_fragment: "Armor-Piercing",
         slot: prefix,
         group: "armor_piercing_flat",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "armor_piercing_damage", kind: flat, min:  4.0, max:  8.0)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "armor_piercing_damage", kind: flat, min:  8.0, max: 12.0)]),
@@ -71,12 +64,81 @@
         name_fragment: "Explosive",
         slot: prefix,
         group: "explosive_dmg_flat",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "explosive_damage", kind: flat, min:  3.0, max: 12.0)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "explosive_damage", kind: flat, min:  6.0, max: 18.0)]),
             (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "explosive_damage", kind: flat, min: 10.0, max: 24.0)]),
             (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "explosive_damage", kind: flat, min: 14.0, max: 36.0)]),
+        ],
+    ),
+
+    // ---------- heavy weapon prefixes (≈10× rapid values per shot) ----------
+    (
+        id: "flat_bullet_damage_heavy",
+        name_fragment: "Slug",
+        slot: prefix,
+        group: "bullet_dmg_flat",
+        allowed_categories: ["heavy"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "bullet_damage", kind: flat, min:  50.0, max: 100.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "bullet_damage", kind: flat, min: 100.0, max: 150.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "bullet_damage", kind: flat, min: 150.0, max: 200.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "bullet_damage", kind: flat, min: 200.0, max: 300.0)]),
+        ],
+    ),
+    (
+        id: "flat_incendiary_damage_heavy",
+        name_fragment: "Thermobaric",
+        slot: prefix,
+        group: "incendiary_dmg_flat",
+        allowed_categories: ["heavy"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "incendiary_damage", kind: flat, min:  50.0, max: 100.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "incendiary_damage", kind: flat, min: 100.0, max: 150.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "incendiary_damage", kind: flat, min: 150.0, max: 200.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "incendiary_damage", kind: flat, min: 200.0, max: 300.0)]),
+        ],
+    ),
+    (
+        id: "flat_armor_piercing_heavy",
+        name_fragment: "Sabot",
+        slot: prefix,
+        group: "armor_piercing_flat",
+        allowed_categories: ["heavy"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "armor_piercing_damage", kind: flat, min:  40.0, max:  80.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "armor_piercing_damage", kind: flat, min:  80.0, max: 120.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "armor_piercing_damage", kind: flat, min: 120.0, max: 180.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "armor_piercing_damage", kind: flat, min: 180.0, max: 260.0)]),
+        ],
+    ),
+    (
+        id: "flat_explosive_damage_heavy",
+        name_fragment: "Frag",
+        slot: prefix,
+        group: "explosive_dmg_flat",
+        allowed_categories: ["heavy"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "explosive_damage", kind: flat, min:  30.0, max: 120.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "explosive_damage", kind: flat, min:  60.0, max: 180.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "explosive_damage", kind: flat, min: 100.0, max: 240.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "explosive_damage", kind: flat, min: 140.0, max: 360.0)]),
+        ],
+    ),
+
+    // ---------- cross-archetype weapon prefix ----------
+    (
+        id: "increased_weapon_damage",
+        name_fragment: "Heavy",
+        slot: prefix,
+        group: "weapon_dmg_inc",
+        allowed_categories: ["rapid_fire", "heavy"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "weapon_damage", kind: increased, min: 0.20, max: 0.35)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "weapon_damage", kind: increased, min: 0.35, max: 0.50)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "weapon_damage", kind: increased, min: 0.50, max: 0.70)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "weapon_damage", kind: increased, min: 0.70, max: 1.00)]),
         ],
     ),
 
@@ -140,7 +202,7 @@
         name_fragment: "of Recovery",
         slot: suffix,
         group: "life_regen",
-        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        allowed_categories: ["rapid_fire", "heavy", "helm", "chest", "boots"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "life_regen", kind: flat, min: 0.5, max: 1.0)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "life_regen", kind: flat, min: 1.0, max: 2.0)]),
@@ -153,7 +215,7 @@
         name_fragment: "of the Wall",
         slot: suffix,
         group: "reduced_melee_damage",
-        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        allowed_categories: ["rapid_fire", "heavy", "helm", "chest", "boots"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.04, max: 0.08)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.08, max: 0.14)]),
@@ -166,7 +228,7 @@
         name_fragment: "of Cover",
         slot: suffix,
         group: "reduced_ranged_damage",
-        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        allowed_categories: ["rapid_fire", "heavy", "helm", "chest", "boots"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.04, max: 0.08)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.08, max: 0.14)]),
@@ -179,7 +241,7 @@
         name_fragment: "of Striding",
         slot: suffix,
         group: "movement_speed",
-        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        allowed_categories: ["rapid_fire", "heavy", "helm", "chest", "boots"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "movement_speed", kind: more, min: 0.03, max: 0.05)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "movement_speed", kind: more, min: 0.05, max: 0.08)]),
@@ -188,13 +250,13 @@
         ],
     ),
 
-    // ---------- weapon-only suffixes ----------
+    // ---------- cross-archetype weapon suffixes ----------
     (
         id: "fire_rate",
         name_fragment: "of Rapid Fire",
         slot: suffix,
         group: "fire_rate",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire", "heavy"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_rate", kind: more, min: 0.05, max: 0.08)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_rate", kind: more, min: 0.08, max: 0.12)]),
@@ -207,7 +269,7 @@
         name_fragment: "of Striking",
         slot: suffix,
         group: "crit_chance",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire", "heavy"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "crit_chance", kind: increased, min: 0.10, max: 0.20)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "crit_chance", kind: increased, min: 0.20, max: 0.30)]),
@@ -220,7 +282,7 @@
         name_fragment: "of Devastation",
         slot: suffix,
         group: "crit_damage",
-        allowed_categories: ["weapon"],
+        allowed_categories: ["rapid_fire", "heavy"],
         tiers: [
             (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "crit_damage", kind: increased, min: 0.20, max: 0.30)]),
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "crit_damage", kind: increased, min: 0.30, max: 0.45)]),

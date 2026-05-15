@@ -69,7 +69,7 @@ Recompute on equipment change, level up, or buff application/expiry. **Never per
 
 Three layers:
 
-1. **BaseItem** — what is this (Pistol, Shotgun, Leather Vest). Has intrinsic stats, slot, category, and an affix pool ID.
+1. **BaseItem** — what is this (Pistol, Combat Helmet, …). Has intrinsic stats (per-shot damage, fire rate, base life/armor/evasion, …), a `slot` (where it equips), and a `category` used to filter eligible affixes. Weapon categories split by archetype — `rapid_fire` (pistol, SMG) vs `heavy` (shotgun, rocket launcher) — so flat-damage affix ranges can be calibrated per class (a +10 flat bullet roll is 100 DPS on an SMG vs 5 DPS on a rocket — content compensates instead of trying to express it through a single formula).
 2. **Affix** — a rollable modifier template. Has tiers (T1 best → T6 worst), each gated by item level with a weight and stat roll ranges. Has a `group` (mutual exclusion within a group on one item) and `tags` (for crafting later).
 3. **ItemInstance** — what actually dropped. Stores base, ilvl, rarity, rolled prefixes/suffixes, and **the seed**. Always store the seed — it enables compact saves, debugging, shareable item codes, and replay.
 
@@ -141,7 +141,7 @@ This is the single highest-leverage tool for an ARPG. Probably a day of work onc
 
 Deliberately tight. Expand only after this is fun.
 
-- **Weapons:** 4 archetypes — pistol, shotgun, SMG, rocket launcher
+- **Weapons:** 4 archetypes in 2 categories — `rapid_fire` (pistol, SMG) and `heavy` (shotgun, rocket launcher). Category drives damage-affix calibration; see BaseItem under Core systems.
 - **Armor:** 3 slots — helm, chest, boots
 - **Affixes:** ~20 per category × 4 tiers (skip T5/T6 for now)
 - **Rarities:** 5-tier (Basic / Common / Rare / Epic / Legendary) — see Rarities under Core systems. Standalone uniques deferred.
