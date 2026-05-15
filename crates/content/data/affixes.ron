@@ -1,6 +1,15 @@
 // Starter affix set. Tiers numbered T1 (best) → T4 (worst); ilvl_required
 // gates availability; weight controls relative frequency within the affix.
+// Curve across tiers: weight 1000/600/300/100 at ilvl 1/20/40/60.
+//
+// Pool shape (matters for rare affix-count target of 4-6):
+//   Weapon prefix groups: 5 (phys flat/inc + fire/cold/lightning flat)
+//   Weapon suffix groups: 7 (3 element resistances + attack speed +
+//                            crit chance + crit damage + movement speed)
+//   Armor (helm/chest/boots) prefix groups: 4 (life + armor/evasion/ES)
+//   Armor suffix groups:    4 (3 element resistances + movement speed)
 [
+    // ---------- weapon prefixes ----------
     (
         id: "flat_phys_damage",
         name_fragment: "Sharp",
@@ -28,6 +37,47 @@
         ],
     ),
     (
+        id: "flat_fire_damage",
+        name_fragment: "Searing",
+        slot: prefix,
+        group: "fire_dmg_flat",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_damage", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_damage", kind: flat, min: 10.0, max: 15.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "fire_damage", kind: flat, min: 15.0, max: 20.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_damage", kind: flat, min: 20.0, max: 30.0)]),
+        ],
+    ),
+    (
+        id: "flat_cold_damage",
+        name_fragment: "Frosted",
+        slot: prefix,
+        group: "cold_dmg_flat",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "cold_damage", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "cold_damage", kind: flat, min: 10.0, max: 15.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "cold_damage", kind: flat, min: 15.0, max: 20.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "cold_damage", kind: flat, min: 20.0, max: 30.0)]),
+        ],
+    ),
+    (
+        id: "flat_lightning_damage",
+        name_fragment: "Crackling",
+        slot: prefix,
+        group: "lightning_dmg_flat",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "lightning_damage", kind: flat, min:  3.0, max: 12.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "lightning_damage", kind: flat, min:  6.0, max: 18.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "lightning_damage", kind: flat, min: 10.0, max: 24.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "lightning_damage", kind: flat, min: 14.0, max: 36.0)]),
+        ],
+    ),
+
+    // ---------- armor prefixes ----------
+    (
         id: "flat_life",
         name_fragment: "Stout",
         slot: prefix,
@@ -41,6 +91,47 @@
         ],
     ),
     (
+        id: "flat_armor",
+        name_fragment: "Reinforced",
+        slot: prefix,
+        group: "armor_flat",
+        allowed_categories: ["helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "armor", kind: flat, min: 10.0, max:  20.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "armor", kind: flat, min: 20.0, max:  35.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "armor", kind: flat, min: 35.0, max:  60.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "armor", kind: flat, min: 60.0, max: 100.0)]),
+        ],
+    ),
+    (
+        id: "flat_evasion",
+        name_fragment: "Light",
+        slot: prefix,
+        group: "evasion_flat",
+        allowed_categories: ["helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "evasion", kind: flat, min: 10.0, max:  20.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "evasion", kind: flat, min: 20.0, max:  35.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "evasion", kind: flat, min: 35.0, max:  60.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "evasion", kind: flat, min: 60.0, max: 100.0)]),
+        ],
+    ),
+    (
+        id: "flat_energy_shield",
+        name_fragment: "Insulated",
+        slot: prefix,
+        group: "energy_shield_flat",
+        allowed_categories: ["helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "energy_shield", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "energy_shield", kind: flat, min: 10.0, max: 18.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "energy_shield", kind: flat, min: 18.0, max: 30.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "energy_shield", kind: flat, min: 30.0, max: 50.0)]),
+        ],
+    ),
+
+    // ---------- universal suffixes (any equipable) ----------
+    (
         id: "fire_resistance",
         name_fragment: "of the Salamander",
         slot: suffix,
@@ -53,6 +144,47 @@
             (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_resistance", kind: flat, min: 30.0, max: 40.0)]),
         ],
     ),
+    (
+        id: "cold_resistance",
+        name_fragment: "of the Whale",
+        slot: suffix,
+        group: "cold_res",
+        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "cold_resistance", kind: flat, min:  6.0, max: 12.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "cold_resistance", kind: flat, min: 12.0, max: 20.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "cold_resistance", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "cold_resistance", kind: flat, min: 30.0, max: 40.0)]),
+        ],
+    ),
+    (
+        id: "lightning_resistance",
+        name_fragment: "of the Storm",
+        slot: suffix,
+        group: "lightning_res",
+        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "lightning_resistance", kind: flat, min:  6.0, max: 12.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "lightning_resistance", kind: flat, min: 12.0, max: 20.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "lightning_resistance", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "lightning_resistance", kind: flat, min: 30.0, max: 40.0)]),
+        ],
+    ),
+    (
+        id: "movement_speed",
+        name_fragment: "of Striding",
+        slot: suffix,
+        group: "movement_speed",
+        allowed_categories: ["weapon", "helm", "chest", "boots"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "movement_speed", kind: more, min: 0.03, max: 0.05)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "movement_speed", kind: more, min: 0.05, max: 0.08)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "movement_speed", kind: more, min: 0.08, max: 0.12)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "movement_speed", kind: more, min: 0.12, max: 0.20)]),
+        ],
+    ),
+
+    // ---------- weapon-only suffixes ----------
     (
         id: "attack_speed",
         name_fragment: "of Speed",
@@ -77,6 +209,19 @@
             (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "crit_chance", kind: increased, min: 0.20, max: 0.30)]),
             (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "crit_chance", kind: increased, min: 0.30, max: 0.45)]),
             (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "crit_chance", kind: increased, min: 0.45, max: 0.65)]),
+        ],
+    ),
+    (
+        id: "crit_damage",
+        name_fragment: "of Devastation",
+        slot: suffix,
+        group: "crit_damage",
+        allowed_categories: ["weapon"],
+        tiers: [
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "crit_damage", kind: increased, min: 0.20, max: 0.30)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "crit_damage", kind: increased, min: 0.30, max: 0.45)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "crit_damage", kind: increased, min: 0.45, max: 0.65)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "crit_damage", kind: increased, min: 0.65, max: 0.90)]),
         ],
     ),
 ]
