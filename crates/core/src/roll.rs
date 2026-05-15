@@ -64,6 +64,7 @@ pub fn roll_item<R: Rng + ?Sized>(
         prefixes,
         suffixes,
         upgrade_tier: 0,
+        attached: Vec::new(),
     })
 }
 
@@ -223,6 +224,7 @@ mod tests {
             category: "weapon".into(),
             slot: "weapon".into(),
             intrinsic_stats: vec![],
+            attachment_slots: vec![],
         }];
         let affixes = vec![
             Affix {

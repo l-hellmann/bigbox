@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::affix::{Affix, AffixId};
-use crate::stats::StatId;
+use crate::stats::{ModifierKind, StatId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,11 +96,37 @@ pub struct BaseItem {
     /// the *base* value in the three-tier stat formula — affixes layer on top.
     #[serde(default)]
     pub intrinsic_stats: Vec<IntrinsicStat>,
+    /// Attachment slot types this base supports, in display order
+    /// (e.g. a pistol with `["optic", "magazine"]`). Each slot type holds
+    /// at most one attachment. Empty for items that take no attachments.
+    #[serde(default)]
+    pub attachment_slots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntrinsicStat {
     pub stat: StatId,
+    pub value: f32,
+}
+
+/// An attachment template (static, no rolling). Slotting it onto a weapon
+/// folds its `modifiers` into the weapon's stat aggregation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: String,
+    pub name: String,
+    pub rarity: Rarity,
+    /// Which `BaseItem.attachment_slots` name this fits into.
+    pub slot_type: String,
+    /// `BaseItem.category` values this attachment is compatible with.
+    pub allowed_categories: Vec<String>,
+    pub modifiers: Vec<AttachmentModifier>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentModifier {
+    pub stat: StatId,
+    pub kind: ModifierKind,
     pub value: f32,
 }
 
@@ -119,6 +145,11 @@ pub struct ItemInstance {
     /// See `core::upgrade` for the scaling and cost model.
     #[serde(default)]
     pub upgrade_tier: u8,
+    /// Attachment template IDs currently slotted on this item. Caller
+    /// enforces slot/compatibility rules (one attachment per slot_type,
+    /// matching `BaseItem.attachment_slots`). Drops have an empty list.
+    #[serde(default)]
+    pub attached: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

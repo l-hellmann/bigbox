@@ -29,6 +29,7 @@
             (stat: "crit_chance",   value:  0.05),
             (stat: "crit_damage",   value:  0.50),
         ],
+        attachment_slots: ["optic", "magazine"],
     ),
     (
         id: "smg",
@@ -43,6 +44,7 @@
             (stat: "crit_chance",   value:  0.05),
             (stat: "crit_damage",   value:  0.50),
         ],
+        attachment_slots: ["optic", "magazine", "stock"],
     ),
 
     // ---------- heavy weapons ----------
@@ -59,6 +61,7 @@
             (stat: "crit_chance",   value:  0.05),
             (stat: "crit_damage",   value:  0.50),
         ],
+        attachment_slots: ["optic", "barrel"],
     ),
     (
         id: "rocket_launcher",
@@ -73,6 +76,7 @@
             (stat: "crit_chance",   value:  0.05),
             (stat: "crit_damage",   value:  0.50),
         ],
+        attachment_slots: ["optic", "stock"],
     ),
 
     // ---------- armor ----------

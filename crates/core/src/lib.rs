@@ -15,5 +15,7 @@ pub use combat::{
     Combatant, FightOutcome, FightState, Fighter, HitResult, Weapon, dps_against,
     expected_hit_damage, resolve_hit, simulate_fight, time_to_kill,
 };
-pub use item::{BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix};
+pub use item::{
+    Attachment, AttachmentModifier, BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix,
+};
 pub use stats::{Modifier, ModifierKind, StatId, aggregate};

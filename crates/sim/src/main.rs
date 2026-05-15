@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
         for _ in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
-            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
+            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes, &[]);
             let m = ItemMetrics::from_stats(&stats);
             sum.record(&item, m.dps, m.ttk);
         }
@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         for kill in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
-            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
+            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes, &[]);
             let m = ItemMetrics::from_stats(&stats);
             write_row(&mut out, kill, &item, m.dps, m.ttk)?;
         }

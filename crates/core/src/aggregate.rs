@@ -5,22 +5,24 @@
 use std::collections::HashMap;
 
 use crate::affix::Affix;
-use crate::item::{BaseItem, ItemInstance};
+use crate::item::{Attachment, BaseItem, ItemInstance};
 use crate::stats::{Modifier, StatId, aggregate};
 use crate::upgrade::upgrade_scale;
 
 /// Returns `stat_id → final_value` for every stat that has either an intrinsic
-/// on `base` or at least one rolled modifier on `item`. Each value is the
-/// result of `aggregate(intrinsic_sum, [Modifier; ..])` for that stat.
+/// on `base` or at least one rolled modifier on `item` or one of its attached
+/// `Attachment`s. Each value is the result of `aggregate(base_sum, &modifiers)`
+/// for that stat, then scaled by the item's `upgrade_tier`.
 ///
-/// Rolled affixes whose `affix_id` or `tier` isn't found in `affixes` are
-/// silently skipped — in normal use, items roll from the same affix slice, so
-/// a missing lookup indicates a data inconsistency rather than a runtime case
-/// we need to surface.
+/// Rolled affixes / attached IDs whose template isn't found in the passed
+/// slices are silently skipped — in normal use everything is loaded from the
+/// same content, so a missing lookup means a data inconsistency, not a
+/// runtime case we need to surface.
 pub fn aggregate_item(
     item: &ItemInstance,
     base: &BaseItem,
     affixes: &[Affix],
+    attachments: &[Attachment],
 ) -> HashMap<StatId, f32> {
     let mut bases: HashMap<StatId, f32> = HashMap::new();
     for intrinsic in &base.intrinsic_stats {
@@ -43,6 +45,20 @@ pub fn aggregate_item(
                     kind: stat_roll.kind,
                     value,
                 });
+        }
+    }
+
+    // Fold slotted attachment modifiers into the same pool. Static (not
+    // rolled) — each attachment contributes its fixed modifier list.
+    for attached_id in &item.attached {
+        let Some(att) = attachments.iter().find(|a| &a.id == attached_id) else {
+            continue;
+        };
+        for m in &att.modifiers {
+            modifiers.entry(m.stat.clone()).or_default().push(Modifier {
+                kind: m.kind,
+                value: m.value,
+            });
         }
     }
 
@@ -73,7 +89,7 @@ pub fn aggregate_item(
 mod tests {
     use super::*;
     use crate::affix::{AffixSlot, AffixTier, StatRoll};
-    use crate::item::{IntrinsicStat, Rarity, RolledAffix};
+    use crate::item::{AttachmentModifier, IntrinsicStat, Rarity, RolledAffix};
     use crate::stats::ModifierKind;
 
     fn pistol() -> BaseItem {
@@ -92,6 +108,7 @@ mod tests {
                     value: 4.0,
                 },
             ],
+            attachment_slots: vec!["optic".into()],
         }
     }
 
@@ -104,6 +121,7 @@ mod tests {
             prefixes: vec![],
             suffixes: vec![],
             upgrade_tier: 0,
+            attached: vec![],
         }
     }
 
@@ -144,7 +162,7 @@ mod tests {
     fn no_affixes_returns_intrinsics() {
         let base = pistol();
         let item = empty_instance("pistol");
-        let result = aggregate_item(&item, &base, &[]);
+        let result = aggregate_item(&item, &base, &[], &[]);
         assert_eq!(result.get("weapon_damage"), Some(&12.0));
         assert_eq!(result.get("fire_rate"), Some(&4.0));
     }
@@ -166,7 +184,7 @@ mod tests {
             10.0,
             10.0,
         )];
-        let result = aggregate_item(&item, &base, &affixes);
+        let result = aggregate_item(&item, &base, &affixes, &[]);
         assert_eq!(result.get("bullet_damage"), Some(&10.0));
     }
 
@@ -187,7 +205,7 @@ mod tests {
             0.50,
             0.50,
         )];
-        let result = aggregate_item(&item, &base, &affixes);
+        let result = aggregate_item(&item, &base, &affixes, &[]);
         // (12 + 0) × (1 + 0.50) × 1 = 18
         let got = *result.get("weapon_damage").unwrap();
         assert!(approx(got, 18.0), "got {got}");
@@ -204,6 +222,7 @@ mod tests {
                 stat: "x".into(),
                 value: 100.0,
             }],
+            attachment_slots: vec![],
         };
         let item = ItemInstance {
             base: "x".into(),
@@ -228,16 +247,91 @@ mod tests {
                 rolls: vec![0.20],
             }],
             upgrade_tier: 0,
+            attached: vec![],
         };
         let affixes = vec![
             affix_one_tier("flat", AffixSlot::Prefix, "x", ModifierKind::Flat, 20.0, 20.0),
             affix_one_tier("inc", AffixSlot::Prefix, "x", ModifierKind::Increased, 0.25, 0.25),
             affix_one_tier("more", AffixSlot::Suffix, "x", ModifierKind::More, 0.20, 0.20),
         ];
-        let result = aggregate_item(&item, &base, &affixes);
+        let result = aggregate_item(&item, &base, &affixes, &[]);
         // (100 + 20) × (1 + 0.25) × (1 + 0.20) = 180
         let got = *result.get("x").unwrap();
         assert!(approx(got, 180.0), "got {got}");
+    }
+
+    fn attachment(id: &str, slot: &str, kind: ModifierKind, stat: &str, value: f32) -> Attachment {
+        Attachment {
+            id: id.into(),
+            name: id.into(),
+            rarity: Rarity::Common,
+            slot_type: slot.into(),
+            allowed_categories: vec!["weapon".into()],
+            modifiers: vec![AttachmentModifier {
+                stat: stat.into(),
+                kind,
+                value,
+            }],
+        }
+    }
+
+    #[test]
+    fn attachment_modifiers_fold_into_aggregation() {
+        let base = pistol();
+        let mut item = empty_instance("pistol");
+        item.attached.push("red_dot".into());
+        let attachments = vec![attachment(
+            "red_dot",
+            "optic",
+            ModifierKind::Flat,
+            "crit_chance",
+            0.05,
+        )];
+        let result = aggregate_item(&item, &base, &[], &attachments);
+        assert!(approx(*result.get("crit_chance").unwrap(), 0.05));
+    }
+
+    #[test]
+    fn attachments_interact_with_affixes_via_three_tier_formula() {
+        // +20% increased weapon_damage from an affix, +10 weapon_damage flat
+        // from an attachment, on top of pistol's intrinsic 12.
+        // (12 + 10) × 1.20 × 1 = 26.4
+        let base = pistol();
+        let mut item = empty_instance("pistol");
+        item.prefixes.push(RolledAffix {
+            affix_id: "inc_weapon".into(),
+            tier: 1,
+            rolls: vec![0.20],
+        });
+        item.attached.push("long_barrel".into());
+        let affixes = vec![affix_one_tier(
+            "inc_weapon",
+            AffixSlot::Prefix,
+            "weapon_damage",
+            ModifierKind::Increased,
+            0.20,
+            0.20,
+        )];
+        let attachments = vec![attachment(
+            "long_barrel",
+            "barrel",
+            ModifierKind::Flat,
+            "weapon_damage",
+            10.0,
+        )];
+        let result = aggregate_item(&item, &base, &affixes, &attachments);
+        let got = *result.get("weapon_damage").unwrap();
+        assert!(approx(got, 26.4), "got {got}");
+    }
+
+    #[test]
+    fn unknown_attachment_ids_silently_skipped() {
+        let base = pistol();
+        let mut item = empty_instance("pistol");
+        item.attached.push("ghost_attachment".into());
+        let result = aggregate_item(&item, &base, &[], &[]);
+        // Just the intrinsics — no panic, no spurious entries.
+        assert_eq!(result.get("weapon_damage"), Some(&12.0));
     }
 
     #[test]
@@ -258,13 +352,13 @@ mod tests {
             10.0,
         )];
 
-        let base_result = aggregate_item(&item, &base, &affixes);
+        let base_result = aggregate_item(&item, &base, &affixes, &[]);
         let base_dmg = *base_result.get("weapon_damage").unwrap();
         let base_bullet = *base_result.get("bullet_damage").unwrap();
 
         // Tier 5 = +40% scaling.
         item.upgrade_tier = 5;
-        let upgraded = aggregate_item(&item, &base, &affixes);
+        let upgraded = aggregate_item(&item, &base, &affixes, &[]);
         let up_dmg = *upgraded.get("weapon_damage").unwrap();
         let up_bullet = *upgraded.get("bullet_damage").unwrap();
 
@@ -289,7 +383,7 @@ mod tests {
             0.10,
             0.10,
         )];
-        let result = aggregate_item(&item, &base, &affixes);
+        let result = aggregate_item(&item, &base, &affixes, &[]);
         // weapon_damage unchanged; fire_rate 4 × 1.10 = 4.4
         assert_eq!(result.get("weapon_damage"), Some(&12.0));
         let rate = *result.get("fire_rate").unwrap();

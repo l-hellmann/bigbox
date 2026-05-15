@@ -1,0 +1,119 @@
+// Weapon attachments — static modifier packs (no rolling for v1). Players
+// collect them as drops and slot them onto compatible weapons.
+//
+// Slot model: each `BaseItem.attachment_slots` lists the slot types the
+// weapon supports; an attachment occupies its `slot_type`. One attachment
+// per slot type per weapon (caller enforces).
+//
+// Slot types covered here: optic, magazine, barrel, stock.
+// Compatibility via `allowed_categories` (rapid_fire / heavy / both).
+//
+// Rarity is just for drop-rate flavor / display; the values are baked in.
+[
+    // ---------- optics (universal) ----------
+    (
+        id: "red_dot_sight",
+        name: "Red Dot Sight",
+        rarity: common,
+        slot_type: "optic",
+        allowed_categories: ["rapid_fire", "heavy"],
+        modifiers: [
+            (stat: "crit_chance", kind: flat,     value: 0.05),
+            (stat: "fire_rate",   kind: more,     value: 0.05),
+        ],
+    ),
+    (
+        id: "acog_scope",
+        name: "ACOG Scope",
+        rarity: rare,
+        slot_type: "optic",
+        allowed_categories: ["rapid_fire", "heavy"],
+        modifiers: [
+            (stat: "crit_chance", kind: flat,      value: 0.10),
+            (stat: "crit_damage", kind: increased, value: 0.30),
+        ],
+    ),
+    (
+        id: "holographic_sight",
+        name: "Holographic Sight",
+        rarity: epic,
+        slot_type: "optic",
+        allowed_categories: ["rapid_fire", "heavy"],
+        modifiers: [
+            (stat: "crit_chance", kind: flat,      value: 0.15),
+            (stat: "crit_damage", kind: increased, value: 0.50),
+            (stat: "fire_rate",   kind: more,      value: 0.05),
+        ],
+    ),
+
+    // ---------- magazines (rapid_fire) ----------
+    (
+        id: "extended_mag",
+        name: "Extended Mag",
+        rarity: common,
+        slot_type: "magazine",
+        allowed_categories: ["rapid_fire"],
+        modifiers: [
+            (stat: "magazine_size", kind: increased, value: 0.50),
+        ],
+    ),
+    (
+        id: "drum_mag",
+        name: "Drum Mag",
+        rarity: rare,
+        slot_type: "magazine",
+        allowed_categories: ["rapid_fire"],
+        modifiers: [
+            (stat: "magazine_size", kind: increased, value: 1.00),
+            // Heavier mag = slower swap. Modeled as a flat addition to
+            // reload_time; bigger value = worse reload.
+            (stat: "reload_time",   kind: flat,      value: 0.30),
+        ],
+    ),
+
+    // ---------- barrels (heavy) ----------
+    (
+        id: "long_barrel",
+        name: "Long Barrel",
+        rarity: common,
+        slot_type: "barrel",
+        allowed_categories: ["heavy"],
+        modifiers: [
+            (stat: "weapon_damage", kind: increased, value: 0.20),
+        ],
+    ),
+    (
+        id: "vented_barrel",
+        name: "Vented Barrel",
+        rarity: rare,
+        slot_type: "barrel",
+        allowed_categories: ["heavy"],
+        modifiers: [
+            (stat: "weapon_damage", kind: increased, value: 0.25),
+            (stat: "fire_rate",     kind: more,      value: 0.10),
+        ],
+    ),
+
+    // ---------- stocks (universal) ----------
+    (
+        id: "tactical_stock",
+        name: "Tactical Stock",
+        rarity: common,
+        slot_type: "stock",
+        allowed_categories: ["rapid_fire", "heavy"],
+        modifiers: [
+            (stat: "movement_speed", kind: more, value: 0.08),
+        ],
+    ),
+    (
+        id: "recoil_pad",
+        name: "Recoil Pad",
+        rarity: rare,
+        slot_type: "stock",
+        allowed_categories: ["rapid_fire", "heavy"],
+        modifiers: [
+            (stat: "crit_chance", kind: flat, value: 0.07),
+            (stat: "fire_rate",   kind: more, value: 0.05),
+        ],
+    ),
+]

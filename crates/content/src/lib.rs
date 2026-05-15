@@ -6,7 +6,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use h2b_core::{Affix, BaseItem};
+use h2b_core::{Affix, Attachment, BaseItem};
 
 #[derive(Debug, Error)]
 pub enum ContentError {
@@ -29,6 +29,10 @@ pub fn load_affixes(path: &Path) -> Result<Vec<Affix>, ContentError> {
 }
 
 pub fn load_bases(path: &Path) -> Result<Vec<BaseItem>, ContentError> {
+    load_ron(path)
+}
+
+pub fn load_attachments(path: &Path) -> Result<Vec<Attachment>, ContentError> {
     load_ron(path)
 }
 
