@@ -1,8 +1,21 @@
 # Project: BoxHead-Inspired ARPG (wasm)
 
-A top-down twin-stick shooter with ARPG progression, procgen levels, and a deep loot system. Inspired by BoxHead 2 for combat feel, Crimsonland/Nation Red for arena flow, and Path of Exile / Last Epoch for item systems.
+A top-down twin-stick shooter with ARPG progression, procgen levels, and a deep loot system. Inspired by BoxHead 2 for combat feel, Crimsonland/Nation Red for arena flow, and Diablo II/III for loot-rarity flow. The stat-aggregation math is borrowed from Path of Exile / Last Epoch — it's the de-facto ARPG standard and we don't need to reinvent it.
 
 Target: browser via WebAssembly. Single-player first; multiplayer is explicitly out of scope until v1 ships.
+
+---
+
+## Design tone
+
+Lean **Diablo II/III over Path of Exile**. PoE's stat-aggregation formula is the cleanest model in the genre, but the *feel* of the loot system should be Diablo-flavored:
+
+- **More rarities, more visible upgrade moments** — 5-tier (Basic → Legendary), not 3. Each tier is structurally distinct: affix count plus a minimum-tier floor, so higher rarities can never roll T4 slop.
+- **Drop excitement over crafting depth** — no trade economy, no currency orbs in v1, no scour-then-craft loops.
+- **Power fantasy over min-maxing** — affix variety, big numbers, satisfying drops. Build optimization is the player's choice, not a requirement to clear content.
+- **Legendary as v1 pinnacle** — standalone uniques (items with named bespoke mods that change gameplay) are deferred. A Legendary today is a roll-floor + affix-count guarantee, not a special template.
+
+When a mechanic could go either way (crafting currency? deterministic re-roll? passive tree of size N?), default to the Diablo answer first. Add PoE-shaped depth only when a specific gameplay problem needs it.
 
 ---
 
@@ -59,15 +72,31 @@ Three layers:
 2. **Affix** — a rollable modifier template. Has tiers (T1 best → T6 worst), each gated by item level with a weight and stat roll ranges. Has a `group` (mutual exclusion within a group on one item) and `tags` (for crafting later).
 3. **ItemInstance** — what actually dropped. Stores base, ilvl, rarity, rolled prefixes/suffixes, and **the seed**. Always store the seed — it enables compact saves, debugging, shareable item codes, and replay.
 
+### Rarities
+
+Five tiers; each differs along two axes — **affix count** and **tier floor** (the best minimum tier an affix is allowed to roll, where T1 is best and T4 is worst). The drop curve below is a starting point — retune with the sim.
+
+| Rarity      | Affix count | Tier floor      | Drop %  |
+|-------------|-------------|-----------------|---------|
+| Basic       | 0           | —               | 60.0    |
+| Common      | 1–2         | none (any tier) | 28.0    |
+| Rare        | 3–4         | none (any tier) |  9.0    |
+| Epic        | 4–5         | T3 (no T4)      |  2.5    |
+| Legendary   | 5–6         | T2 (T2 or T1)   |  0.5    |
+
+The tier floor is what makes Epic and Legendary feel like real upgrades rather than "Rare with one more roll." A Legendary at ilvl 60 cannot roll worse than T2 on any affix slot.
+
+Cap each side at 3 prefixes / 3 suffixes — the affix count above splits across both. At low ilvl, the tier floor may exceed what's currently eligible (e.g. Legendary at ilvl 20 has no T2 affixes available); for v1 the sim is allowed to surface that as "rolled fewer affixes than the band," and we'll add an ilvl-gated rarity downgrade once it actually bites.
+
 ### Roll pipeline
 
 ```
 1. Drop chance check
 2. Rarity roll (weighted, modified by player luck/MF)
 3. Base roll (weighted, filtered by ilvl + slot)
-4. Affix count (determined by rarity: Magic 1-2, Rare 4-6)
+4. Affix count (per rarity: Basic 0, Common 1–2, Rare 3–4, Epic 4–5, Legendary 5–6)
 5. For each affix slot:
-   a. Filter pool: allowed_categories ⊇ base, tier ilvl_required ≤ item ilvl, group not taken, prefix/suffix slot open
+   a. Filter pool: allowed_categories ⊇ base, tier ilvl_required ≤ item ilvl, tier ≤ rarity tier floor, group not taken, prefix/suffix slot open
    b. Weighted pick of affix
    c. Weighted pick of eligible tier within affix
    d. Roll each stat between min/max
@@ -114,7 +143,7 @@ Deliberately tight. Expand only after this is fun.
 - **Weapons:** 4 archetypes — pistol, shotgun, SMG, rocket launcher
 - **Armor:** 3 slots — helm, chest, boots
 - **Affixes:** ~20 per category × 4 tiers (skip T5/T6 for now)
-- **Rarities:** Normal, Magic, Rare (no uniques in v1)
+- **Rarities:** 5-tier (Basic / Common / Rare / Epic / Legendary) — see Rarities under Core systems. Standalone uniques deferred.
 - **Enemies:** 5 types, BoxHead-style — basic zombie, fast zombie, fat/tank, ranged spitter, swarm rusher
 - **Bosses:** 1
 - **Biomes:** 1
