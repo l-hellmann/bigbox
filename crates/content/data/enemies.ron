@@ -1,0 +1,58 @@
+// Starter enemy roster — the 5 archetypes from CLAUDE.md v1 scope.
+// Ordered roughly by difficulty so the sim's TTK matrix reads left → right
+// from "free kill" to "tank". `category` is loose grouping; `ilvl` is
+// informational for now (spawn tables consume it later).
+//
+// Defensive profiles are picked to exercise the armor and evasion math:
+//   swarm_rusher  — disposable trash, dies in one shot
+//   fast_zombie   — evasion-dodgy, smaller HP
+//   spitter       — moderate dodge, light HP (so we can see crit value)
+//   basic_zombie  — generic baseline (no defenses; matches the bare-DPS view)
+//   fat_zombie    — the armor stress test (200 → 400 HP + 50 armor)
+[
+    (
+        id: "swarm_rusher",
+        name: "Swarm Rusher",
+        category: "zombie",
+        ilvl: 1,
+        max_life: 30.0,
+        armor: 0.0,
+        evasion: 5.0,
+    ),
+    (
+        id: "fast_zombie",
+        name: "Fast Zombie",
+        category: "zombie",
+        ilvl: 5,
+        max_life: 60.0,
+        armor: 0.0,
+        evasion: 15.0,
+    ),
+    (
+        id: "spitter",
+        name: "Spitter",
+        category: "zombie",
+        ilvl: 10,
+        max_life: 80.0,
+        armor: 0.0,
+        evasion: 10.0,
+    ),
+    (
+        id: "basic_zombie",
+        name: "Basic Zombie",
+        category: "zombie",
+        ilvl: 1,
+        max_life: 100.0,
+        armor: 0.0,
+        evasion: 0.0,
+    ),
+    (
+        id: "fat_zombie",
+        name: "Fat Zombie",
+        category: "zombie",
+        ilvl: 25,
+        max_life: 400.0,
+        armor: 50.0,
+        evasion: 0.0,
+    ),
+]

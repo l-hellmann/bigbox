@@ -15,17 +15,23 @@ Legendary         0    0.00%           0.00
 Base                    count      pct    avg_dps    avg_ttk    kit_dps    kit_ttk
 combat_boots              271   13.55%       0.00          —          —          —
 combat_helmet             307   15.35%       0.00          —          —          —
-pistol                    269   13.45%      62.10      4.355      73.39      3.618
-rocket_launcher           279   13.95%      58.76      4.224      76.44      3.242
-shotgun                   307   15.35%      68.24      4.721     100.84      2.893
-smg                       273   13.65%      92.46      4.682     120.31      3.428
+pistol                    269   13.45%      62.10      1.777      73.39      1.506
+rocket_launcher           279   13.95%      58.76      2.043      76.44      1.576
+shotgun                   307   15.35%      68.24      2.194     100.84      1.373
+smg                       273   13.65%      92.46      1.527     120.31      1.179
 tactical_vest             294   14.70%       0.00          —          —          —
 
 TTK by rarity             Basic     Common       Rare       Epic  Legendary
-pistol                   5.057s     3.350s     2.183s     1.658s          —
-rocket_launcher          5.057s     3.232s     2.365s     1.413s          —
-shotgun                  5.861s     3.380s     1.908s     0.704s          —
-smg                      6.187s     3.356s     1.634s     1.067s          —
+pistol                   2.033s     1.417s     0.963s     0.750s          —
+rocket_launcher          2.439s     1.574s     1.157s     0.699s          —
+shotgun                  2.710s     1.591s     0.914s     0.348s          —
+smg                      1.951s     1.173s     0.638s     0.440s          —
+
+TTK by enemy          Swarm Rusher   Fast Zombie       Spitter  Basic Zombie    Fat Zombie
+pistol                      0.560s        1.226s        1.563s        1.777s        9.780s
+rocket_launcher             0.644s        1.410s        1.798s        2.043s        8.631s
+shotgun                     0.691s        1.514s        1.931s        2.194s        9.886s
+smg                         0.481s        1.054s        1.344s        1.527s       11.534s
 
 Affix                            tier    count   avg_roll  theoretical_range   fill_pct
 crit_chance                      T3         30      0.257 [   0.20,    0.30]      57.4%

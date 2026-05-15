@@ -6,7 +6,7 @@ use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use h2b_core::{
-    Attachment, BaseItem, Combatant, ItemInstance, Rarity, StatId, Weapon, aggregate_item,
+    Attachment, BaseItem, Combatant, Enemy, ItemInstance, Rarity, StatId, Weapon, aggregate_item,
     dps_against, item::RolledAffix, roll::roll_item, time_to_kill,
 };
 
@@ -35,28 +35,39 @@ fn main() -> anyhow::Result<()> {
     let affixes = h2b_content::load_affixes(&args.content_dir.join("affixes.ron"))?;
     let bases = h2b_content::load_bases(&args.content_dir.join("bases.ron"))?;
     let attachments = h2b_content::load_attachments(&args.content_dir.join("attachments.ron"))?;
+    let enemies = h2b_content::load_enemies(&args.content_dir.join("enemies.ron"))?;
     let base_index: HashMap<&str, &BaseItem> =
         bases.iter().map(|b| (b.id.as_str(), b)).collect();
     let optimal_loadouts: HashMap<&str, Vec<String>> = bases
         .iter()
         .map(|b| (b.id.as_str(), optimal_loadout(b, &attachments)))
         .collect();
+    // `basic_zombie` is the canonical neutral baseline (100 HP, no armor,
+    // no evasion) — what avg_ttk in the Base table is measured against.
+    // Falls back to the first loaded enemy if `basic_zombie` isn't in
+    // content, then to a 100-HP dummy if no enemies at all.
+    let baseline = enemies
+        .iter()
+        .find(|e| e.id == "basic_zombie")
+        .or_else(|| enemies.first())
+        .map(|e| e.as_combatant())
+        .unwrap_or_else(|| Combatant::dummy(100.0));
 
     let mut rng = StdRng::seed_from_u64(args.seed);
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
     if args.summary {
-        let mut sum = Summary::new();
+        let mut sum = Summary::new(&enemies);
         for _ in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
             let base = base_index[item.base.as_str()];
             let loadout = &optimal_loadouts[item.base.as_str()];
-            let metrics = measure(&item, base, &affixes, &attachments, loadout);
+            let metrics = measure(&item, base, &affixes, &attachments, loadout, &enemies, &baseline);
             sum.record(&item, &metrics);
         }
-        sum.print(&mut out, &affixes, args.seed, args.monster_level)?;
+        sum.print(&mut out, &affixes, &enemies, args.seed, args.monster_level)?;
     } else {
         writeln!(
             out,
@@ -66,8 +77,8 @@ fn main() -> anyhow::Result<()> {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
             let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes, &[]);
-            let m = naked_metrics(&stats);
-            write_row(&mut out, kill, &item, m.0, m.1)?;
+            let (dps, ttk) = naked_metrics(&stats, &baseline);
+            write_row(&mut out, kill, &item, dps, ttk)?;
         }
     }
 
@@ -88,17 +99,6 @@ fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
         Rarity::Common
     } else {
         Rarity::Basic
-    }
-}
-
-/// Benchmark target for TTK measurement. Modest armor exercises mitigation
-/// math without disproportionately punishing any archetype.
-fn benchmark_enemy() -> Combatant {
-    Combatant {
-        max_life: 200.0,
-        current_life: 200.0,
-        armor: 30.0,
-        evasion: 0.0,
     }
 }
 
@@ -182,31 +182,45 @@ fn measure(
     affixes: &[h2b_core::Affix],
     attachments: &[Attachment],
     optimal_combo: &[String],
+    enemies: &[Enemy],
+    baseline: &Combatant,
 ) -> DropMetrics {
     let naked = aggregate_item(item, base, affixes, &[]);
-    let (dps, ttk) = naked_metrics(&naked);
+    let (dps, ttk) = naked_metrics(&naked, baseline);
 
     // Kitted = same drop + optimal attachments slotted.
     let mut kitted_item = item.clone();
     kitted_item.attached = optimal_combo.to_vec();
     let kitted = aggregate_item(&kitted_item, base, affixes, attachments);
-    let (kit_dps, kit_ttk) = naked_metrics(&kitted);
+    let (kit_dps, kit_ttk) = naked_metrics(&kitted, baseline);
+
+    // Per-enemy TTK uses drop-only stats (no attachments) — answers
+    // "what does a fresh drop of this weapon kill enemy X in?"
+    let naked_weapon = Weapon::from_stats(&naked);
+    let ttk_per_enemy: Vec<f32> = enemies
+        .iter()
+        .map(|e| {
+            let target = e.as_combatant();
+            time_to_kill(&naked_weapon, &target).unwrap_or(0.0)
+        })
+        .collect();
 
     DropMetrics {
         dps,
         ttk,
         kit_dps,
         kit_ttk,
+        ttk_per_enemy,
     }
 }
 
-/// Compute (dps, ttk) for a stats map. "Naked" here just means "as-given",
-/// not literally without attachments — the caller decides what's in the map.
-fn naked_metrics(stats: &HashMap<StatId, f32>) -> (f32, f32) {
+/// Compute (dps, ttk-vs-baseline) for a stats map. `dps` is against a naked
+/// dummy (pure weapon-strength view); `ttk` is against the supplied target.
+fn naked_metrics(stats: &HashMap<StatId, f32>, target: &Combatant) -> (f32, f32) {
     let weapon = Weapon::from_stats(stats);
     let dps = dps_against(&weapon, &Combatant::dummy(1.0));
     let ttk = if dps > 0.0 {
-        time_to_kill(&weapon, &benchmark_enemy()).unwrap_or(0.0)
+        time_to_kill(&weapon, target).unwrap_or(0.0)
     } else {
         0.0
     };

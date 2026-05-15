@@ -4,11 +4,15 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-use h2b_core::{Affix, ItemInstance, Rarity};
+use h2b_core::{Affix, Enemy, ItemInstance, Rarity};
 
 pub struct Summary {
     drops: u32,
     rarities: [RaritySum; Rarity::ALL.len()],
+    /// Number of enemies the matrix will display — set at construction
+    /// from the loaded enemies slice. Per-base per-enemy TTK accumulators
+    /// inside `BaseSum` are sized to match.
+    enemy_count: usize,
     by_base: BTreeMap<String, BaseSum>,
     by_affix_tier: BTreeMap<(String, u8), AffixTierSum>,
 }
@@ -19,7 +23,7 @@ struct RaritySum {
     sum_affixes: u64,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct BaseSum {
     count: u32,
     sum_dps: f64,
@@ -33,16 +37,21 @@ struct BaseSum {
     sum_kit_ttk: f64,
     /// Per-rarity TTK breakdown; indexed by `Rarity::index()`.
     ttk_by_rarity: [TtkAccum; Rarity::ALL.len()],
+    /// Per-enemy TTK breakdown; one entry per enemy in load order, sized
+    /// when the parent `Summary` is constructed.
+    ttk_by_enemy: Vec<TtkAccum>,
 }
 
 /// Caller-supplied metrics for a single drop. The sim already knows how to
 /// compute these; Summary just records and aggregates.
-#[derive(Clone, Copy)]
 pub struct DropMetrics {
     pub dps: f32,
     pub ttk: f32,
     pub kit_dps: f32,
     pub kit_ttk: f32,
+    /// TTK against each enemy in load order — same length as the enemies
+    /// slice passed to `Summary::new`. Drop-only (no attachments).
+    pub ttk_per_enemy: Vec<f32>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -87,12 +96,20 @@ impl RollStats {
 }
 
 impl Summary {
-    pub fn new() -> Self {
+    pub fn new(enemies: &[Enemy]) -> Self {
         Self {
             drops: 0,
             rarities: [RaritySum::default(); Rarity::ALL.len()],
+            enemy_count: enemies.len(),
             by_base: BTreeMap::new(),
             by_affix_tier: BTreeMap::new(),
+        }
+    }
+
+    fn fresh_base_sum(&self) -> BaseSum {
+        BaseSum {
+            ttk_by_enemy: vec![TtkAccum::default(); self.enemy_count],
+            ..Default::default()
         }
     }
 
@@ -103,7 +120,11 @@ impl Summary {
         rs.count += 1;
         rs.sum_affixes += n_affixes;
 
-        let base = self.by_base.entry(item.base.clone()).or_default();
+        let seed = self.fresh_base_sum();
+        let base = self
+            .by_base
+            .entry(item.base.clone())
+            .or_insert(seed);
         base.count += 1;
         base.sum_dps += m.dps as f64;
         if m.ttk > 0.0 {
@@ -114,6 +135,12 @@ impl Summary {
             let acc = &mut base.ttk_by_rarity[item.rarity.index()];
             acc.weapon_count += 1;
             acc.sum_ttk += m.ttk as f64;
+            for (i, &per_enemy_ttk) in m.ttk_per_enemy.iter().enumerate() {
+                if i < base.ttk_by_enemy.len() && per_enemy_ttk > 0.0 {
+                    base.ttk_by_enemy[i].weapon_count += 1;
+                    base.ttk_by_enemy[i].sum_ttk += per_enemy_ttk as f64;
+                }
+            }
         }
 
         for a in item.prefixes.iter().chain(item.suffixes.iter()) {
@@ -138,6 +165,7 @@ impl Summary {
         &self,
         out: &mut W,
         affixes: &[Affix],
+        enemies: &[Enemy],
         seed: u64,
         ilvl: u32,
     ) -> io::Result<()> {
@@ -233,6 +261,32 @@ impl Summary {
                 writeln!(out)?;
             }
             writeln!(out)?;
+
+            // TTK by enemy — same drop-only data, sliced per-enemy from the
+            // loaded roster. Column widths sized for "Swarm Rusher" (12) + space.
+            if !enemies.is_empty() {
+                write!(out, "{:<20}", "TTK by enemy")?;
+                for e in enemies {
+                    write!(out, " {:>13}", e.name)?;
+                }
+                writeln!(out)?;
+                for (base, sum) in &self.by_base {
+                    if sum.weapon_count == 0 {
+                        continue;
+                    }
+                    write!(out, "{:<20}", base)?;
+                    for acc in &sum.ttk_by_enemy {
+                        if acc.weapon_count > 0 {
+                            let avg = acc.sum_ttk / acc.weapon_count as f64;
+                            write!(out, " {:>12.3}s", avg)?;
+                        } else {
+                            write!(out, " {:>13}", "—")?;
+                        }
+                    }
+                    writeln!(out)?;
+                }
+                writeln!(out)?;
+            }
         }
 
         writeln!(

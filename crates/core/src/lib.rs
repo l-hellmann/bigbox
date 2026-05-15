@@ -5,6 +5,7 @@ pub mod affix;
 pub mod aggregate;
 pub mod attach;
 pub mod combat;
+pub mod enemy;
 pub mod item;
 pub mod roll;
 pub mod stats;
@@ -17,6 +18,7 @@ pub use combat::{
     Combatant, FightOutcome, FightState, Fighter, HitResult, Weapon, dps_against,
     expected_hit_damage, resolve_hit, simulate_fight, time_to_kill,
 };
+pub use enemy::Enemy;
 pub use item::{
     Attachment, AttachmentModifier, BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix,
 };
