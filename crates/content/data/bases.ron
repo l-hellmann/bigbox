@@ -12,7 +12,7 @@
 // affixes layer on top. Zero-affix DPS:
 //   pistol           = damage 12  × rate 4.0  = 48
 //   shotgun          = damage 36  × rate 1.0  = 36
-//   smg              = damage  8  × rate 10.0 = 80
+//   smg              = damage  5  × rate 10.0 = 50
 //   rocket_launcher  = damage 80  × rate 0.5  = 40
 [
     // ---------- rapid-fire weapons ----------
@@ -34,7 +34,7 @@
         category: "rapid_fire",
         slot: "weapon",
         intrinsic_stats: [
-            (stat: "weapon_damage", value:  8.0),
+            (stat: "weapon_damage", value:  5.0),
             (stat: "fire_rate",     value: 10.0),
             (stat: "magazine_size", value: 30.0),
             (stat: "reload_time",   value:  2.0),
