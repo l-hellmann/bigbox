@@ -9,7 +9,7 @@ use h2b_core::{Affix, ItemInstance, Rarity};
 pub struct Summary {
     drops: u32,
     rarities: [RaritySum; Rarity::ALL.len()],
-    by_base: BTreeMap<String, u32>,
+    by_base: BTreeMap<String, BaseSum>,
     by_affix_tier: BTreeMap<(String, u8), AffixTierSum>,
 }
 
@@ -17,6 +17,12 @@ pub struct Summary {
 struct RaritySum {
     count: u32,
     sum_affixes: u64,
+}
+
+#[derive(Default, Clone, Copy)]
+struct BaseSum {
+    count: u32,
+    sum_dps: f64,
 }
 
 struct AffixTierSum {
@@ -64,14 +70,16 @@ impl Summary {
         }
     }
 
-    pub fn record(&mut self, item: &ItemInstance) {
+    pub fn record(&mut self, item: &ItemInstance, dps: f32) {
         self.drops += 1;
         let n_affixes = (item.prefixes.len() + item.suffixes.len()) as u64;
         let rs = &mut self.rarities[item.rarity.index()];
         rs.count += 1;
         rs.sum_affixes += n_affixes;
 
-        *self.by_base.entry(item.base.clone()).or_insert(0) += 1;
+        let base = self.by_base.entry(item.base.clone()).or_default();
+        base.count += 1;
+        base.sum_dps += dps as f64;
 
         for a in item.prefixes.iter().chain(item.suffixes.iter()) {
             let entry = self
@@ -132,10 +140,23 @@ impl Summary {
         }
         writeln!(out)?;
 
-        writeln!(out, "{:<20} {:>8} {:>8}", "Base", "count", "pct")?;
-        for (base, &count) in &self.by_base {
-            let pct = pct_of(count as f64, self.drops as f64);
-            writeln!(out, "{:<20} {:>8} {:>7.2}%", base, count, pct)?;
+        writeln!(
+            out,
+            "{:<20} {:>8} {:>8} {:>10}",
+            "Base", "count", "pct", "avg_dps"
+        )?;
+        for (base, sum) in &self.by_base {
+            let pct = pct_of(sum.count as f64, self.drops as f64);
+            let avg_dps = if sum.count > 0 {
+                sum.sum_dps / sum.count as f64
+            } else {
+                0.0
+            };
+            writeln!(
+                out,
+                "{:<20} {:>8} {:>7.2}% {:>10.2}",
+                base, sum.count, pct, avg_dps
+            )?;
         }
         writeln!(out)?;
 

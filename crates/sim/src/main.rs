@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use h2b_core::{ItemInstance, Rarity, item::RolledAffix, roll::roll_item};
+use h2b_core::{
+    BaseItem, ItemInstance, Rarity, StatId, aggregate_item, item::RolledAffix, roll::roll_item,
+};
 
 mod summary;
 use summary::Summary;
@@ -30,6 +33,8 @@ fn main() -> anyhow::Result<()> {
 
     let affixes = h2b_content::load_affixes(&args.content_dir.join("affixes.ron"))?;
     let bases = h2b_content::load_bases(&args.content_dir.join("bases.ron"))?;
+    let base_index: HashMap<&str, &BaseItem> =
+        bases.iter().map(|b| (b.id.as_str(), b)).collect();
 
     let mut rng = StdRng::seed_from_u64(args.seed);
     let stdout = io::stdout();
@@ -40,15 +45,19 @@ fn main() -> anyhow::Result<()> {
         for _ in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
-            sum.record(&item);
+            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
+            let dps = weapon_dps(&stats);
+            sum.record(&item, dps);
         }
         sum.print(&mut out, &affixes, args.seed, args.monster_level)?;
     } else {
-        writeln!(out, "kill,rarity,base,ilvl,n_affixes,affixes")?;
+        writeln!(out, "kill,rarity,base,ilvl,n_affixes,dps_estimate,affixes")?;
         for kill in 0..args.kills {
             let rarity = roll_rarity(&mut rng);
             let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
-            write_row(&mut out, kill, &item)?;
+            let stats = aggregate_item(&item, base_index[item.base.as_str()], &affixes);
+            let dps = weapon_dps(&stats);
+            write_row(&mut out, kill, &item, dps)?;
         }
     }
 
@@ -72,11 +81,29 @@ fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
     }
 }
 
-fn write_row<W: Write>(out: &mut W, kill: u32, item: &ItemInstance) -> io::Result<()> {
+/// Sum of per-shot damage stats × fire rate. Returns 0 for non-weapon items
+/// (no fire_rate stat). This intentionally bakes the v1 damage model: every
+/// flat damage stat (bullet/incendiary/AP/explosive) sums into per-shot total,
+/// only `weapon_damage` carries the "increased weapon damage" % scaling.
+fn weapon_dps(stats: &HashMap<StatId, f32>) -> f32 {
+    let damage = get_or_zero(stats, "weapon_damage")
+        + get_or_zero(stats, "bullet_damage")
+        + get_or_zero(stats, "incendiary_damage")
+        + get_or_zero(stats, "armor_piercing_damage")
+        + get_or_zero(stats, "explosive_damage");
+    let rate = get_or_zero(stats, "fire_rate");
+    damage * rate
+}
+
+fn get_or_zero(stats: &HashMap<StatId, f32>, key: &str) -> f32 {
+    stats.get(key).copied().unwrap_or(0.0)
+}
+
+fn write_row<W: Write>(out: &mut W, kill: u32, item: &ItemInstance, dps: f32) -> io::Result<()> {
     let n = item.prefixes.len() + item.suffixes.len();
     write!(
         out,
-        "{kill},{rarity:?},{base},{ilvl},{n},",
+        "{kill},{rarity:?},{base},{ilvl},{n},{dps:.2},",
         rarity = item.rarity,
         base = item.base,
         ilvl = item.ilvl,
