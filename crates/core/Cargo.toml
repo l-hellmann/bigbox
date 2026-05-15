@@ -1,0 +1,15 @@
+[package]
+name = "head2box-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure logic for head2box: stats, affixes, items, combat math. No rendering, no IO."
+
+[lib]
+name = "h2b_core"
+
+[dependencies]
+serde = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
