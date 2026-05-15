@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::affix::AffixId;
+use crate::affix::{Affix, AffixId};
 use crate::stats::StatId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +42,46 @@ impl Rarity {
             Rarity::Epic => 3,
             Rarity::Legendary => 2,
         }
+    }
+
+    /// Step down by one rarity tier (Legendary → Epic → Rare → Common → Basic).
+    /// `Basic` is the floor and returns itself.
+    fn step_down(self) -> Self {
+        match self {
+            Rarity::Legendary => Rarity::Epic,
+            Rarity::Epic => Rarity::Rare,
+            Rarity::Rare => Rarity::Common,
+            Rarity::Common => Rarity::Basic,
+            Rarity::Basic => Rarity::Basic,
+        }
+    }
+
+    /// If this rarity's tier floor can't be filled at the given `ilvl` (because
+    /// no eligible affix tier is good enough), walk down to the highest rarity
+    /// whose floor *is* satisfiable. Matches Diablo's level-gated drops: a
+    /// requested Legendary at ilvl 30 actually drops as an Epic, not as a
+    /// "Legendary" with zero affixes rolled.
+    ///
+    /// Returns `Basic` if no affixes are eligible at all.
+    pub fn downgrade_to_satisfiable(self, ilvl: u32, affixes: &[Affix]) -> Self {
+        let best_eligible_tier = affixes
+            .iter()
+            .flat_map(|a| a.tiers.iter())
+            .filter(|t| t.ilvl_required <= ilvl)
+            .map(|t| t.tier)
+            .min();
+        let Some(best) = best_eligible_tier else {
+            return Rarity::Basic;
+        };
+        let mut r = self;
+        while best > r.tier_floor() {
+            let next = r.step_down();
+            if next == r {
+                return r;
+            }
+            r = next;
+        }
+        r
     }
 }
 

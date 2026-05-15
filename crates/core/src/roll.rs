@@ -24,6 +24,10 @@ pub fn roll_item<R: Rng + ?Sized>(
         return Err(RollError::NoBases);
     }
 
+    // If the requested rarity's tier floor isn't satisfiable at this ilvl,
+    // downgrade — better to drop a real Epic than a Legendary-tagged Basic.
+    let rarity = rarity.downgrade_to_satisfiable(ilvl, affixes);
+
     let base = &bases[rng.gen_range(0..bases.len())];
     let seed: u64 = rng.r#gen();
 
@@ -312,6 +316,57 @@ mod tests {
             assert!(item.prefixes.len() <= 1);
             assert!(item.suffixes.len() <= 1);
         }
+    }
+
+    #[test]
+    fn legendary_at_low_ilvl_downgrades_to_epic() {
+        // Fixture has T4 (ilvl 1) and T2 (ilvl 40). At ilvl 30 only T4 is
+        // eligible — Legendary's floor T2 is unreachable, Epic's floor T3
+        // also unreachable (best eligible tier is T4). Should downgrade
+        // all the way to Rare.
+        let (bases, affixes) = fixture();
+        let mut rng = StdRng::seed_from_u64(13);
+        let item = roll_item(&mut rng, &bases, &affixes, 30, Rarity::Legendary).unwrap();
+        assert_eq!(item.rarity, Rarity::Rare);
+        // Rare rolls 3-4 affixes; fixture has 1 prefix + 1 suffix group, so
+        // capped at 1 each. The key invariant: > 0 affixes (vs the broken
+        // pre-downgrade behavior which produced zero).
+        let total = item.prefixes.len() + item.suffixes.len();
+        assert!(total > 0, "rolled {total} affixes after downgrade");
+    }
+
+    #[test]
+    fn rarity_unchanged_when_floor_is_satisfiable() {
+        // At ilvl 40 the fixture's T2 affix is eligible — Legendary floor T2
+        // is satisfied, no downgrade.
+        let (bases, affixes) = fixture();
+        let mut rng = StdRng::seed_from_u64(13);
+        let item = roll_item(&mut rng, &bases, &affixes, 40, Rarity::Legendary).unwrap();
+        assert_eq!(item.rarity, Rarity::Legendary);
+    }
+
+    #[test]
+    fn downgrade_helper_steps_down_to_satisfiable() {
+        let (_, affixes) = fixture();
+        // At ilvl 30 best eligible is T4 (T2 needs ilvl 40 in fixture).
+        assert_eq!(
+            Rarity::Legendary.downgrade_to_satisfiable(30, &affixes),
+            Rarity::Rare
+        );
+        assert_eq!(
+            Rarity::Epic.downgrade_to_satisfiable(30, &affixes),
+            Rarity::Rare
+        );
+        // Rare/Common/Basic have no floor — always compatible.
+        assert_eq!(
+            Rarity::Rare.downgrade_to_satisfiable(30, &affixes),
+            Rarity::Rare
+        );
+        // At ilvl 40 T2 is eligible — Legendary stays Legendary.
+        assert_eq!(
+            Rarity::Legendary.downgrade_to_satisfiable(40, &affixes),
+            Rarity::Legendary
+        );
     }
 
     #[test]
