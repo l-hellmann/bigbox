@@ -10,6 +10,7 @@ Target: browser via WebAssembly. Single-player first; multiplayer is explicitly 
 
 Lean **Diablo II/III over Path of Exile**. PoE's stat-aggregation formula is the cleanest model in the genre, but the *feel* of the loot system should be Diablo-flavored:
 
+- **No magic, no elemental fantasy** — this is a zombie shooter. Damage types are real ammunition / firearm archetypes (bullet, incendiary, armor-piercing, explosive); defenses are kinetic and biological (life, armor, evasion, thorns, damage-reduction). No fire/cold/lightning resistance, no spell damage, no enchantment language. "Diablo II/III" here means *D2's loot feel*, not its fantasy theming.
 - **More rarities, more visible upgrade moments** — 5-tier (Basic → Legendary), not 3. Each tier is structurally distinct: affix count plus a minimum-tier floor, so higher rarities can never roll T4 slop.
 - **Drop excitement over crafting depth** — no trade economy, no currency orbs in v1, no scour-then-craft loops.
 - **Power fantasy over min-maxing** — affix variety, big numbers, satisfying drops. Build optimization is the player's choice, not a requirement to clear content.
@@ -58,8 +59,8 @@ Three-tier formula. Adopt it as-is; players already understand it from PoE/Last 
 final = (base + sum_of_flat) × (1 + sum_of_increased) × product_of_more_multipliers
 ```
 
-- **Flat added:** "+20 physical damage" — additive with base
-- **Increased:** "+15% increased fire damage" — all sum into one bucket, multiply once
+- **Flat added:** "+20 bullet damage" — additive with base
+- **Increased:** "+15% increased weapon damage" — all sum into one bucket, multiply once
 - **More:** "20% more damage while moving" — each applied separately, fully multiplicative
 
 Recompute on equipment change, level up, or buff application/expiry. **Never per frame.** Cache the result on the entity.

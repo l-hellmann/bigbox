@@ -1,78 +1,82 @@
-// Starter affix set. Tiers numbered T1 (best) → T4 (worst); ilvl_required
-// gates availability; weight controls relative frequency within the affix.
-// Curve across tiers: weight 1000/600/300/100 at ilvl 1/20/40/60.
+// Gun-themed starter affix set. No magic, no elemental fantasy — this is a
+// zombie shooter, not a spellcaster RPG. Damage types are real ammunition /
+// firearm mod archetypes (hollow-point, incendiary, armor-piercing, explosive).
 //
-// Pool shape (matters for rare affix-count target of 4-6):
-//   Weapon prefix groups: 5 (phys flat/inc + fire/cold/lightning flat)
-//   Weapon suffix groups: 7 (3 element resistances + attack speed +
-//                            crit chance + crit damage + movement speed)
-//   Armor (helm/chest/boots) prefix groups: 4 (life + armor/evasion/ES)
-//   Armor suffix groups:    4 (3 element resistances + movement speed)
+// Tiers numbered T1 (best) → T4 (worst); ilvl_required gates availability;
+// weight controls relative frequency within the affix. Curve across tiers:
+// weight 1000/600/300/100 at ilvl 1/20/40/60.
+//
+// Pool shape (matters for rare affix-count target of 3-4 / Epic 4-5 / Leg 5-6):
+//   Weapon prefix groups: 5 (bullet/AP/incendiary/explosive flat + weapon_dmg inc)
+//   Weapon suffix groups: 3 (fire rate + crit chance + crit damage)
+//                        + 4 universal suffixes available below
+//   Armor prefix groups:  4 (life + armor + evasion + thorns)
+//   Armor suffix groups:  4 universal (regen + melee/ranged reduction + move spd)
 [
     // ---------- weapon prefixes ----------
     (
-        id: "flat_phys_damage",
-        name_fragment: "Sharp",
+        id: "flat_bullet_damage",
+        name_fragment: "Hollow-Point",
         slot: prefix,
-        group: "phys_dmg_flat",
+        group: "bullet_dmg_flat",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "physical_damage", kind: flat, min:  5.0, max: 10.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "physical_damage", kind: flat, min: 10.0, max: 15.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "physical_damage", kind: flat, min: 15.0, max: 20.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "physical_damage", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "bullet_damage", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "bullet_damage", kind: flat, min: 10.0, max: 15.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "bullet_damage", kind: flat, min: 15.0, max: 20.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "bullet_damage", kind: flat, min: 20.0, max: 30.0)]),
         ],
     ),
     (
-        id: "increased_phys_damage",
+        id: "increased_weapon_damage",
         name_fragment: "Heavy",
         slot: prefix,
-        group: "phys_dmg_inc",
+        group: "weapon_dmg_inc",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "physical_damage", kind: increased, min: 0.20, max: 0.35)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "physical_damage", kind: increased, min: 0.35, max: 0.50)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "physical_damage", kind: increased, min: 0.50, max: 0.70)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "physical_damage", kind: increased, min: 0.70, max: 1.00)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "weapon_damage", kind: increased, min: 0.20, max: 0.35)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "weapon_damage", kind: increased, min: 0.35, max: 0.50)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "weapon_damage", kind: increased, min: 0.50, max: 0.70)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "weapon_damage", kind: increased, min: 0.70, max: 1.00)]),
         ],
     ),
     (
-        id: "flat_fire_damage",
-        name_fragment: "Searing",
+        id: "flat_incendiary_damage",
+        name_fragment: "Incendiary",
         slot: prefix,
-        group: "fire_dmg_flat",
+        group: "incendiary_dmg_flat",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_damage", kind: flat, min:  5.0, max: 10.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_damage", kind: flat, min: 10.0, max: 15.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "fire_damage", kind: flat, min: 15.0, max: 20.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_damage", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "incendiary_damage", kind: flat, min:  5.0, max: 10.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "incendiary_damage", kind: flat, min: 10.0, max: 15.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "incendiary_damage", kind: flat, min: 15.0, max: 20.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "incendiary_damage", kind: flat, min: 20.0, max: 30.0)]),
         ],
     ),
     (
-        id: "flat_cold_damage",
-        name_fragment: "Frosted",
+        id: "flat_armor_piercing",
+        name_fragment: "Armor-Piercing",
         slot: prefix,
-        group: "cold_dmg_flat",
+        group: "armor_piercing_flat",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "cold_damage", kind: flat, min:  5.0, max: 10.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "cold_damage", kind: flat, min: 10.0, max: 15.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "cold_damage", kind: flat, min: 15.0, max: 20.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "cold_damage", kind: flat, min: 20.0, max: 30.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "armor_piercing_damage", kind: flat, min:  4.0, max:  8.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "armor_piercing_damage", kind: flat, min:  8.0, max: 12.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "armor_piercing_damage", kind: flat, min: 12.0, max: 18.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "armor_piercing_damage", kind: flat, min: 18.0, max: 26.0)]),
         ],
     ),
     (
-        id: "flat_lightning_damage",
-        name_fragment: "Crackling",
+        id: "flat_explosive_damage",
+        name_fragment: "Explosive",
         slot: prefix,
-        group: "lightning_dmg_flat",
+        group: "explosive_dmg_flat",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "lightning_damage", kind: flat, min:  3.0, max: 12.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "lightning_damage", kind: flat, min:  6.0, max: 18.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "lightning_damage", kind: flat, min: 10.0, max: 24.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "lightning_damage", kind: flat, min: 14.0, max: 36.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "explosive_damage", kind: flat, min:  3.0, max: 12.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "explosive_damage", kind: flat, min:  6.0, max: 18.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "explosive_damage", kind: flat, min: 10.0, max: 24.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "explosive_damage", kind: flat, min: 14.0, max: 36.0)]),
         ],
     ),
 
@@ -105,7 +109,7 @@
     ),
     (
         id: "flat_evasion",
-        name_fragment: "Light",
+        name_fragment: "Agile",
         slot: prefix,
         group: "evasion_flat",
         allowed_categories: ["helm", "chest", "boots"],
@@ -117,57 +121,57 @@
         ],
     ),
     (
-        id: "flat_energy_shield",
-        name_fragment: "Insulated",
+        id: "flat_thorns",
+        name_fragment: "Spiked",
         slot: prefix,
-        group: "energy_shield_flat",
+        group: "thorns_flat",
         allowed_categories: ["helm", "chest", "boots"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "energy_shield", kind: flat, min:  5.0, max: 10.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "energy_shield", kind: flat, min: 10.0, max: 18.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "energy_shield", kind: flat, min: 18.0, max: 30.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "energy_shield", kind: flat, min: 30.0, max: 50.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "thorns", kind: flat, min:  2.0, max:  5.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "thorns", kind: flat, min:  5.0, max:  9.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "thorns", kind: flat, min:  9.0, max: 15.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "thorns", kind: flat, min: 15.0, max: 25.0)]),
         ],
     ),
 
     // ---------- universal suffixes (any equipable) ----------
     (
-        id: "fire_resistance",
-        name_fragment: "of the Salamander",
+        id: "life_regen",
+        name_fragment: "of Recovery",
         slot: suffix,
-        group: "fire_res",
+        group: "life_regen",
         allowed_categories: ["weapon", "helm", "chest", "boots"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_resistance", kind: flat, min:  6.0, max: 12.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_resistance", kind: flat, min: 12.0, max: 20.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "fire_resistance", kind: flat, min: 20.0, max: 30.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_resistance", kind: flat, min: 30.0, max: 40.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "life_regen", kind: flat, min: 0.5, max: 1.0)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "life_regen", kind: flat, min: 1.0, max: 2.0)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "life_regen", kind: flat, min: 2.0, max: 3.0)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "life_regen", kind: flat, min: 3.0, max: 5.0)]),
         ],
     ),
     (
-        id: "cold_resistance",
-        name_fragment: "of the Whale",
+        id: "reduced_melee_damage",
+        name_fragment: "of the Wall",
         slot: suffix,
-        group: "cold_res",
+        group: "reduced_melee_damage",
         allowed_categories: ["weapon", "helm", "chest", "boots"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "cold_resistance", kind: flat, min:  6.0, max: 12.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "cold_resistance", kind: flat, min: 12.0, max: 20.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "cold_resistance", kind: flat, min: 20.0, max: 30.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "cold_resistance", kind: flat, min: 30.0, max: 40.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.04, max: 0.08)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.08, max: 0.14)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.14, max: 0.22)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "reduced_melee_damage", kind: flat, min: 0.22, max: 0.30)]),
         ],
     ),
     (
-        id: "lightning_resistance",
-        name_fragment: "of the Storm",
+        id: "reduced_ranged_damage",
+        name_fragment: "of Cover",
         slot: suffix,
-        group: "lightning_res",
+        group: "reduced_ranged_damage",
         allowed_categories: ["weapon", "helm", "chest", "boots"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "lightning_resistance", kind: flat, min:  6.0, max: 12.0)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "lightning_resistance", kind: flat, min: 12.0, max: 20.0)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "lightning_resistance", kind: flat, min: 20.0, max: 30.0)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "lightning_resistance", kind: flat, min: 30.0, max: 40.0)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.04, max: 0.08)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.08, max: 0.14)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.14, max: 0.22)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "reduced_ranged_damage", kind: flat, min: 0.22, max: 0.30)]),
         ],
     ),
     (
@@ -186,16 +190,16 @@
 
     // ---------- weapon-only suffixes ----------
     (
-        id: "attack_speed",
-        name_fragment: "of Speed",
+        id: "fire_rate",
+        name_fragment: "of Rapid Fire",
         slot: suffix,
-        group: "attack_speed",
+        group: "fire_rate",
         allowed_categories: ["weapon"],
         tiers: [
-            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "attack_speed", kind: more, min: 0.05, max: 0.08)]),
-            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "attack_speed", kind: more, min: 0.08, max: 0.12)]),
-            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "attack_speed", kind: more, min: 0.12, max: 0.17)]),
-            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "attack_speed", kind: more, min: 0.17, max: 0.25)]),
+            (tier: 4, ilvl_required:  1, weight: 1000, stats: [(stat: "fire_rate", kind: more, min: 0.05, max: 0.08)]),
+            (tier: 3, ilvl_required: 20, weight:  600, stats: [(stat: "fire_rate", kind: more, min: 0.08, max: 0.12)]),
+            (tier: 2, ilvl_required: 40, weight:  300, stats: [(stat: "fire_rate", kind: more, min: 0.12, max: 0.17)]),
+            (tier: 1, ilvl_required: 60, weight:  100, stats: [(stat: "fire_rate", kind: more, min: 0.17, max: 0.25)]),
         ],
     ),
     (
