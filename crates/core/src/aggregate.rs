@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::affix::Affix;
 use crate::item::{BaseItem, ItemInstance};
 use crate::stats::{Modifier, StatId, aggregate};
+use crate::upgrade::upgrade_scale;
 
 /// Returns `stat_id → final_value` for every stat that has either an intrinsic
 /// on `base` or at least one rolled modifier on `item`. Each value is the
@@ -56,6 +57,15 @@ pub fn aggregate_item(
         }
     }
 
+    // Apply player-side upgrade scaling uniformly. Tier 0 = identity, so
+    // fresh drops pass through unchanged.
+    let scale = upgrade_scale(item.upgrade_tier);
+    if scale != 1.0 {
+        for v in result.values_mut() {
+            *v *= scale;
+        }
+    }
+
     result
 }
 
@@ -93,6 +103,7 @@ mod tests {
             seed: 0,
             prefixes: vec![],
             suffixes: vec![],
+            upgrade_tier: 0,
         }
     }
 
@@ -216,6 +227,7 @@ mod tests {
                 tier: 1,
                 rolls: vec![0.20],
             }],
+            upgrade_tier: 0,
         };
         let affixes = vec![
             affix_one_tier("flat", AffixSlot::Prefix, "x", ModifierKind::Flat, 20.0, 20.0),
@@ -226,6 +238,38 @@ mod tests {
         // (100 + 20) × (1 + 0.25) × (1 + 0.20) = 180
         let got = *result.get("x").unwrap();
         assert!(approx(got, 180.0), "got {got}");
+    }
+
+    #[test]
+    fn upgrade_tier_scales_all_aggregated_stats() {
+        let base = pistol();
+        let mut item = empty_instance("pistol");
+        item.prefixes.push(RolledAffix {
+            affix_id: "flat_bullet".into(),
+            tier: 1,
+            rolls: vec![10.0],
+        });
+        let affixes = vec![affix_one_tier(
+            "flat_bullet",
+            AffixSlot::Prefix,
+            "bullet_damage",
+            ModifierKind::Flat,
+            10.0,
+            10.0,
+        )];
+
+        let base_result = aggregate_item(&item, &base, &affixes);
+        let base_dmg = *base_result.get("weapon_damage").unwrap();
+        let base_bullet = *base_result.get("bullet_damage").unwrap();
+
+        // Tier 5 = +40% scaling.
+        item.upgrade_tier = 5;
+        let upgraded = aggregate_item(&item, &base, &affixes);
+        let up_dmg = *upgraded.get("weapon_damage").unwrap();
+        let up_bullet = *upgraded.get("bullet_damage").unwrap();
+
+        assert!(approx(up_dmg / base_dmg, 1.40), "weapon_damage ratio");
+        assert!(approx(up_bullet / base_bullet, 1.40), "bullet_damage ratio");
     }
 
     #[test]

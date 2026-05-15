@@ -63,6 +63,7 @@ pub fn roll_item<R: Rng + ?Sized>(
         seed,
         prefixes,
         suffixes,
+        upgrade_tier: 0,
     })
 }
 

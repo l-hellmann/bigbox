@@ -114,6 +114,11 @@ pub struct ItemInstance {
     pub seed: u64,
     pub prefixes: Vec<RolledAffix>,
     pub suffixes: Vec<RolledAffix>,
+    /// Player-applied upgrade level, 0..=`upgrade::MAX_UPGRADE_TIER`.
+    /// Drops always start at 0; the player spends scrap to bump it.
+    /// See `core::upgrade` for the scaling and cost model.
+    #[serde(default)]
+    pub upgrade_tier: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ pub mod combat;
 pub mod item;
 pub mod roll;
 pub mod stats;
+pub mod upgrade;
 
 pub use affix::{Affix, AffixSlot, AffixTier, StatRoll};
 pub use aggregate::aggregate_item;
