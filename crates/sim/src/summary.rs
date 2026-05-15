@@ -27,8 +27,22 @@ struct BaseSum {
     /// don't drag the average toward zero.
     weapon_count: u32,
     sum_ttk: f64,
+    /// "Kitted" = drop + the base's optimal attachment loadout. Same
+    /// weapon_count gate as ttk — armor pieces don't contribute.
+    sum_kit_dps: f64,
+    sum_kit_ttk: f64,
     /// Per-rarity TTK breakdown; indexed by `Rarity::index()`.
     ttk_by_rarity: [TtkAccum; Rarity::ALL.len()],
+}
+
+/// Caller-supplied metrics for a single drop. The sim already knows how to
+/// compute these; Summary just records and aggregates.
+#[derive(Clone, Copy)]
+pub struct DropMetrics {
+    pub dps: f32,
+    pub ttk: f32,
+    pub kit_dps: f32,
+    pub kit_ttk: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -82,7 +96,7 @@ impl Summary {
         }
     }
 
-    pub fn record(&mut self, item: &ItemInstance, dps: f32, ttk: f32) {
+    pub fn record(&mut self, item: &ItemInstance, m: &DropMetrics) {
         self.drops += 1;
         let n_affixes = (item.prefixes.len() + item.suffixes.len()) as u64;
         let rs = &mut self.rarities[item.rarity.index()];
@@ -91,13 +105,15 @@ impl Summary {
 
         let base = self.by_base.entry(item.base.clone()).or_default();
         base.count += 1;
-        base.sum_dps += dps as f64;
-        if ttk > 0.0 {
+        base.sum_dps += m.dps as f64;
+        if m.ttk > 0.0 {
             base.weapon_count += 1;
-            base.sum_ttk += ttk as f64;
+            base.sum_ttk += m.ttk as f64;
+            base.sum_kit_dps += m.kit_dps as f64;
+            base.sum_kit_ttk += m.kit_ttk as f64;
             let acc = &mut base.ttk_by_rarity[item.rarity.index()];
             acc.weapon_count += 1;
-            acc.sum_ttk += ttk as f64;
+            acc.sum_ttk += m.ttk as f64;
         }
 
         for a in item.prefixes.iter().chain(item.suffixes.iter()) {
@@ -161,8 +177,8 @@ impl Summary {
 
         writeln!(
             out,
-            "{:<20} {:>8} {:>8} {:>10} {:>10}",
-            "Base", "count", "pct", "avg_dps", "avg_ttk"
+            "{:<20} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10}",
+            "Base", "count", "pct", "avg_dps", "avg_ttk", "kit_dps", "kit_ttk"
         )?;
         for (base, sum) in &self.by_base {
             let pct = pct_of(sum.count as f64, self.drops as f64);
@@ -171,15 +187,24 @@ impl Summary {
             } else {
                 0.0
             };
-            let ttk_cell = if sum.weapon_count > 0 {
-                format!("{:>10.3}", sum.sum_ttk / sum.weapon_count as f64)
+            let (ttk_cell, kit_dps_cell, kit_ttk_cell) = if sum.weapon_count > 0 {
+                let wc = sum.weapon_count as f64;
+                (
+                    format!("{:>10.3}", sum.sum_ttk / wc),
+                    format!("{:>10.2}", sum.sum_kit_dps / wc),
+                    format!("{:>10.3}", sum.sum_kit_ttk / wc),
+                )
             } else {
-                format!("{:>10}", "—")
+                (
+                    format!("{:>10}", "—"),
+                    format!("{:>10}", "—"),
+                    format!("{:>10}", "—"),
+                )
             };
             writeln!(
                 out,
-                "{:<20} {:>8} {:>7.2}% {:>10.2} {}",
-                base, sum.count, pct, avg_dps, ttk_cell
+                "{:<20} {:>8} {:>7.2}% {:>10.2} {} {} {}",
+                base, sum.count, pct, avg_dps, ttk_cell, kit_dps_cell, kit_ttk_cell
             )?;
         }
         writeln!(out)?;

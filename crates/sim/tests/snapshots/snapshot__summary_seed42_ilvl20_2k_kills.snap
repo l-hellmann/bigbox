@@ -12,14 +12,14 @@ Rare            166    8.30%           3.51
 Epic             52    2.60%           4.60
 Legendary         0    0.00%           0.00
 
-Base                    count      pct    avg_dps    avg_ttk
-combat_boots              271   13.55%       0.00          —
-combat_helmet             307   15.35%       0.00          —
-pistol                    269   13.45%      62.10      4.355
-rocket_launcher           279   13.95%      58.76      4.224
-shotgun                   307   15.35%      68.24      4.721
-smg                       273   13.65%      92.46      4.682
-tactical_vest             294   14.70%       0.00          —
+Base                    count      pct    avg_dps    avg_ttk    kit_dps    kit_ttk
+combat_boots              271   13.55%       0.00          —          —          —
+combat_helmet             307   15.35%       0.00          —          —          —
+pistol                    269   13.45%      62.10      4.355      73.39      3.618
+rocket_launcher           279   13.95%      58.76      4.224      76.44      3.242
+shotgun                   307   15.35%      68.24      4.721     100.84      2.893
+smg                       273   13.65%      92.46      4.682     120.31      3.428
+tactical_vest             294   14.70%       0.00          —          —          —
 
 TTK by rarity             Basic     Common       Rare       Epic  Legendary
 pistol                   5.057s     3.350s     2.183s     1.658s          —
