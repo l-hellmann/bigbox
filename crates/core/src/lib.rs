@@ -7,5 +7,5 @@ pub mod roll;
 pub mod stats;
 
 pub use affix::{Affix, AffixSlot, AffixTier, StatRoll};
-pub use item::{BaseItem, ItemInstance, Rarity, RolledAffix};
+pub use item::{BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix};
 pub use stats::{Modifier, ModifierKind, StatId, aggregate};

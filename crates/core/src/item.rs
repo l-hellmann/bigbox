@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::affix::AffixId;
+use crate::stats::StatId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,7 +51,17 @@ pub struct BaseItem {
     pub name: String,
     pub category: String,
     pub slot: String,
-    pub affix_pool: String,
+    /// Fixed stats inherent to this base (e.g. a pistol's base damage and
+    /// fire rate, an armor piece's base life/armor/evasion). Aggregated as
+    /// the *base* value in the three-tier stat formula — affixes layer on top.
+    #[serde(default)]
+    pub intrinsic_stats: Vec<IntrinsicStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntrinsicStat {
+    pub stat: StatId,
+    pub value: f32,
 }
 
 /// What actually dropped. Always carries its `seed` — enables compact saves,

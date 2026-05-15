@@ -217,7 +217,7 @@ mod tests {
             name: "Pistol".into(),
             category: "weapon".into(),
             slot: "weapon".into(),
-            affix_pool: "weapon".into(),
+            intrinsic_stats: vec![],
         }];
         let affixes = vec![
             Affix {
