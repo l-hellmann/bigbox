@@ -8,14 +8,12 @@ use h2b_core::{Affix, ItemInstance, Rarity};
 
 pub struct Summary {
     drops: u32,
-    normal: RaritySum,
-    magic: RaritySum,
-    rare: RaritySum,
+    rarities: [RaritySum; Rarity::ALL.len()],
     by_base: BTreeMap<String, u32>,
     by_affix_tier: BTreeMap<(String, u8), AffixTierSum>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct RaritySum {
     count: u32,
     sum_affixes: u64,
@@ -60,9 +58,7 @@ impl Summary {
     pub fn new() -> Self {
         Self {
             drops: 0,
-            normal: RaritySum::default(),
-            magic: RaritySum::default(),
-            rare: RaritySum::default(),
+            rarities: [RaritySum::default(); Rarity::ALL.len()],
             by_base: BTreeMap::new(),
             by_affix_tier: BTreeMap::new(),
         }
@@ -71,13 +67,9 @@ impl Summary {
     pub fn record(&mut self, item: &ItemInstance) {
         self.drops += 1;
         let n_affixes = (item.prefixes.len() + item.suffixes.len()) as u64;
-        let rarity_sum = match item.rarity {
-            Rarity::Normal => &mut self.normal,
-            Rarity::Magic => &mut self.magic,
-            Rarity::Rare => &mut self.rare,
-        };
-        rarity_sum.count += 1;
-        rarity_sum.sum_affixes += n_affixes;
+        let rs = &mut self.rarities[item.rarity.index()];
+        rs.count += 1;
+        rs.sum_affixes += n_affixes;
 
         *self.by_base.entry(item.base.clone()).or_insert(0) += 1;
 
@@ -121,11 +113,8 @@ impl Summary {
             "{:<10} {:>8} {:>8} {:>14}",
             "Rarity", "count", "pct", "avg_affixes"
         )?;
-        for (label, s) in [
-            ("Normal", &self.normal),
-            ("Magic", &self.magic),
-            ("Rare", &self.rare),
-        ] {
+        for rarity in Rarity::ALL {
+            let s = &self.rarities[rarity.index()];
             let pct = pct_of(s.count as f64, self.drops as f64);
             let avg = if s.count > 0 {
                 s.sum_affixes as f64 / s.count as f64
@@ -135,7 +124,10 @@ impl Summary {
             writeln!(
                 out,
                 "{:<10} {:>8} {:>7.2}% {:>14.2}",
-                label, s.count, pct, avg
+                format!("{rarity:?}"),
+                s.count,
+                pct,
+                avg
             )?;
         }
         writeln!(out)?;
@@ -152,9 +144,6 @@ impl Summary {
             "{:<24} {:>4} {:>8} {:>10} {:>19} {:>10}",
             "Affix", "tier", "count", "avg_roll", "theoretical_range", "fill_pct"
         )?;
-        // BTreeMap iteration groups rows by affix_id, then tier ascending (T1 first).
-        // We display the first stat per affix-tier — fine for the current content
-        // where every tier rolls a single stat. Extend if multi-stat affixes land.
         for ((affix_id, tier), s) in &self.by_affix_tier {
             let (theo_min, theo_max) = lookup_range(&index, affix_id, *tier);
             let rs = s.rolls.first().copied().unwrap_or_else(RollStats::empty);

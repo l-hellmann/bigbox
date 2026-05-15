@@ -55,16 +55,20 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Placeholder rarity distribution. Real tuning happens once we eyeball the
-/// first summary — that's the whole point of the sim.
+/// Starter rarity distribution (per 1000): Basic 600, Common 280, Rare 90,
+/// Epic 25, Legendary 5. Tunable once we eyeball the summary.
 fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
-    let r = rng.gen_range(0..100);
+    let r = rng.gen_range(0..1000);
     if r < 5 {
-        Rarity::Rare
+        Rarity::Legendary
     } else if r < 30 {
-        Rarity::Magic
+        Rarity::Epic
+    } else if r < 120 {
+        Rarity::Rare
+    } else if r < 400 {
+        Rarity::Common
     } else {
-        Rarity::Normal
+        Rarity::Basic
     }
 }
 
