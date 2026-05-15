@@ -20,6 +20,20 @@ When a mechanic could go either way (crafting currency? deterministic re-roll? p
 
 ---
 
+## Multiplayer posture
+
+**v1 is single-player.** Coop (cooperative PvE) is on the roadmap for a later release; PvP arenas are a separate, future scope after coop is solid.
+
+Retrofitting netcode is expensive, so we adopt three habits now that keep future multiplayer cheap without slowing single-player iteration:
+
+1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable, and (later) network-shippable.
+2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. If full game state can serialize to RON and restore, it can replicate over the wire.
+3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()`, no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the muscle multiplayer needs — keep exercising it.
+
+When coop lands: host-authoritative for PvE is fine, occasional desync is acceptable, drop-in/drop-out as a stretch. When PvP eventually lands: authoritative server + client prediction, and *separate balance* from PvE (damage caps, CC limits, distinct stat curves). Don't try to balance one set of numbers for both.
+
+---
+
 ## Stack
 
 - **Language:** Rust
@@ -155,7 +169,7 @@ Deliberately tight. Expand only after this is fun.
 
 ## Out of scope (be ruthless)
 
-- Multiplayer / netcode
+- Multiplayer / netcode (coop on the roadmap, PvP after — see Multiplayer posture)
 - Trade
 - Seasons / leagues
 - Uniques
