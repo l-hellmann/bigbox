@@ -10,6 +10,9 @@
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
+pub mod flow;
+pub use flow::{FlowField, UNREACHABLE};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tile {
     Wall,
