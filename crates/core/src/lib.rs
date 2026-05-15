@@ -3,6 +3,7 @@
 
 pub mod affix;
 pub mod aggregate;
+pub mod attach;
 pub mod combat;
 pub mod item;
 pub mod roll;
@@ -11,6 +12,7 @@ pub mod upgrade;
 
 pub use affix::{Affix, AffixSlot, AffixTier, StatRoll};
 pub use aggregate::aggregate_item;
+pub use attach::{AttachError, try_attach};
 pub use combat::{
     Combatant, FightOutcome, FightState, Fighter, HitResult, Weapon, dps_against,
     expected_hit_damage, resolve_hit, simulate_fight, time_to_kill,
