@@ -22,15 +22,40 @@ When a mechanic could go either way (crafting currency? deterministic re-roll? p
 
 ## Multiplayer posture
 
-**v1 is single-player.** Coop (cooperative PvE) is on the roadmap for a later release; PvP arenas are a separate, future scope after coop is solid.
+**v1 is single-player.** Coop (cooperative PvE) is on the roadmap for a later release using **[SpacetimeDB](https://spacetimedb.com)** as the netcode + state-sync layer. PvP arenas are a separate, future scope after coop is solid and will likely need additional layers on top.
 
-Retrofitting netcode is expensive, so we adopt three habits now that keep future multiplayer cheap without slowing single-player iteration:
+### Why SpacetimeDB for coop
 
-1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable, and (later) network-shippable.
-2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. If full game state can serialize to RON and restore, it can replicate over the wire.
-3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()`, no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the muscle multiplayer needs — keep exercising it.
+The shape fits this codebase almost exactly: Rust modules server-side, table-based world state with subscribe-and-react push to clients, transactional reducers as the request shape, ACID rollback on failure. Our `core` crate (`roll_item`, `aggregate_item`, `resolve_hit`, `simulate_fight` — all pure, seeded, deterministic) is exactly what reducers want; we should expect to **reuse `core` unchanged inside the SpacetimeDB module**, not rewrite it.
 
-When coop lands: host-authoritative for PvE is fine, occasional desync is acceptable, drop-in/drop-out as a stretch. When PvP eventually lands: authoritative server + client prediction, and *separate balance* from PvE (damage caps, CC limits, distinct stat curves). Don't try to balance one set of numbers for both.
+Reference: `.attic/context/spacetime-db.md` has the docs snapshot.
+
+### Architectural habits to keep
+
+Retrofitting netcode is expensive even with SpacetimeDB. Three habits, adopted now, keep multiplayer cheap to add without slowing single-player iteration:
+
+1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer.
+2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. On the coop branch, this state becomes the SpacetimeDB table schema; if it can't serialize, it can't replicate.
+3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()` (use `ctx.timestamp` once we're in reducer-land), no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the load-bearing property for both client-side prediction and reducer rollback.
+
+### Update granularity (the v1.X design problem)
+
+Can't push 60fps position updates through tables — wire traffic and reducer overhead will both choke. Standard MMO partition once coop work starts:
+
+- **Persistent / replicated state** in tables: player position checkpoints, current_life, inventory, dropped loot, enemy spawn rows, kill events.
+- **Ephemeral state** computed client-side from inputs and snapshots: projectile trajectories (replay from a `fired_at` timestamp + initial vector), particles, screen shake, animation tweens.
+
+Player movement is the classic friction point — likely a sparse checkpoint table (10-20Hz) with client-side interpolation, plus occasional input commands as reducers.
+
+### PvP, when it eventually lands
+
+PvP arenas probably need more than subscribe-and-react. Sub-100ms competitive responsiveness wants authoritative-server tick + client-side prediction + rollback. SpacetimeDB stays useful for **matchmaking, persistence, leaderboards, character data**; the in-arena tick loop may live in a thinner layer on top (or fully separate). Defer the decision until PvP is actually being scoped.
+
+PvP balance must be **separate from PvE** (damage caps, CC limits, distinct stat curves) — never try to balance one set of numbers for both modes.
+
+### Before committing fully
+
+One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust client SDK compiles to wasm cleanly** and plays nicely with macroquad's async story. If that's broken, the TypeScript client + Rust core split via wasm interop is plan B. Do this spike when we're close to starting coop work, not now.
 
 ---
 
@@ -169,7 +194,7 @@ Deliberately tight. Expand only after this is fun.
 
 ## Out of scope (be ruthless)
 
-- Multiplayer / netcode (coop on the roadmap, PvP after — see Multiplayer posture)
+- Multiplayer / netcode (coop on the roadmap via SpacetimeDB, PvP after — see Multiplayer posture)
 - Trade
 - Seasons / leagues
 - Uniques
