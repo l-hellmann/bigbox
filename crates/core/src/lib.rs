@@ -3,11 +3,13 @@
 
 pub mod affix;
 pub mod aggregate;
+pub mod combat;
 pub mod item;
 pub mod roll;
 pub mod stats;
 
 pub use affix::{Affix, AffixSlot, AffixTier, StatRoll};
 pub use aggregate::aggregate_item;
+pub use combat::{Combatant, Weapon, dps_against, expected_hit_damage, time_to_kill};
 pub use item::{BaseItem, IntrinsicStat, ItemInstance, Rarity, RolledAffix};
 pub use stats::{Modifier, ModifierKind, StatId, aggregate};

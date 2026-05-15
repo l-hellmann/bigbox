@@ -6,7 +6,8 @@ use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use h2b_core::{
-    BaseItem, ItemInstance, Rarity, StatId, aggregate_item, item::RolledAffix, roll::roll_item,
+    BaseItem, Combatant, ItemInstance, Rarity, StatId, Weapon, aggregate_item, dps_against,
+    item::RolledAffix, roll::roll_item,
 };
 
 mod summary;
@@ -81,22 +82,13 @@ fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
     }
 }
 
-/// Sum of per-shot damage stats × fire rate. Returns 0 for non-weapon items
-/// (no fire_rate stat). This intentionally bakes the v1 damage model: every
-/// flat damage stat (bullet/incendiary/AP/explosive) sums into per-shot total,
-/// only `weapon_damage` carries the "increased weapon damage" % scaling.
+/// Weapon DPS against a naked baseline target (no armor, no evasion).
+/// Crit and damage-type aggregation live in `core::combat` — this is just the
+/// sim's normalized comparison metric. Armor items naturally return 0
+/// (no fire rate → no DPS).
 fn weapon_dps(stats: &HashMap<StatId, f32>) -> f32 {
-    let damage = get_or_zero(stats, "weapon_damage")
-        + get_or_zero(stats, "bullet_damage")
-        + get_or_zero(stats, "incendiary_damage")
-        + get_or_zero(stats, "armor_piercing_damage")
-        + get_or_zero(stats, "explosive_damage");
-    let rate = get_or_zero(stats, "fire_rate");
-    damage * rate
-}
-
-fn get_or_zero(stats: &HashMap<StatId, f32>, key: &str) -> f32 {
-    stats.get(key).copied().unwrap_or(0.0)
+    let weapon = Weapon::from_stats(stats);
+    dps_against(&weapon, &Combatant::dummy(1.0))
 }
 
 fn write_row<W: Write>(out: &mut W, kill: u32, item: &ItemInstance, dps: f32) -> io::Result<()> {

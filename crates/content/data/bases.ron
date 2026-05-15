@@ -26,6 +26,8 @@
             (stat: "fire_rate",     value:  4.0),
             (stat: "magazine_size", value: 12.0),
             (stat: "reload_time",   value:  1.5),
+            (stat: "crit_chance",   value:  0.05),
+            (stat: "crit_damage",   value:  0.50),
         ],
     ),
     (
@@ -38,6 +40,8 @@
             (stat: "fire_rate",     value: 10.0),
             (stat: "magazine_size", value: 30.0),
             (stat: "reload_time",   value:  2.0),
+            (stat: "crit_chance",   value:  0.05),
+            (stat: "crit_damage",   value:  0.50),
         ],
     ),
 
@@ -52,6 +56,8 @@
             (stat: "fire_rate",     value:  1.0),
             (stat: "magazine_size", value:  6.0),
             (stat: "reload_time",   value:  3.0),
+            (stat: "crit_chance",   value:  0.05),
+            (stat: "crit_damage",   value:  0.50),
         ],
     ),
     (
@@ -64,6 +70,8 @@
             (stat: "fire_rate",     value:  0.5),
             (stat: "magazine_size", value:  2.0),
             (stat: "reload_time",   value:  4.0),
+            (stat: "crit_chance",   value:  0.05),
+            (stat: "crit_damage",   value:  0.50),
         ],
     ),
 
