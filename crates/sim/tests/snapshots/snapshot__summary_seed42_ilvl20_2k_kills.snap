@@ -1,0 +1,64 @@
+---
+source: crates/sim/tests/snapshot.rs
+expression: out
+---
+=== head2box-sim summary ===
+seed: 42  ilvl: 20  drops: 2000
+
+Rarity        count      pct    avg_affixes
+Basic          1238   61.90%           0.00
+Common          548   27.40%           1.47
+Rare            162    8.10%           3.49
+Epic             44    2.20%           4.57
+Legendary         8    0.40%           0.00
+
+Base                    count      pct    avg_dps
+combat_boots              282   14.10%       0.00
+combat_helmet             310   15.50%       0.00
+pistol                    271   13.55%      59.79
+rocket_launcher           266   13.30%      55.95
+shotgun                   303   15.15%      65.79
+smg                       273   13.65%      90.13
+tactical_vest             295   14.75%       0.00
+
+Affix                    tier    count   avg_roll   theoretical_range   fill_pct
+crit_chance              T3         30      0.254 [   0.20,    0.30]      53.5%
+crit_chance              T4         27      0.142 [   0.10,    0.20]      42.0%
+crit_damage              T3         30      0.371 [   0.30,    0.45]      47.6%
+crit_damage              T4         33      0.252 [   0.20,    0.30]      51.6%
+fire_rate                T3         28      0.100 [   0.08,    0.12]      50.0%
+fire_rate                T4         29      0.064 [   0.05,    0.08]      45.3%
+flat_armor               T3         42     29.780 [  20.00,   35.00]      65.2%
+flat_armor               T4         43     14.860 [  10.00,   20.00]      48.6%
+flat_armor_piercing      T3         15      9.830 [   8.00,   12.00]      45.7%
+flat_armor_piercing      T4         20      6.310 [   4.00,    8.00]      57.7%
+flat_armor_piercing_heavy T3         29     96.378 [  80.00,  120.00]      40.9%
+flat_armor_piercing_heavy T4         26     65.923 [  40.00,   80.00]      64.8%
+flat_bullet_damage       T3         27     12.767 [  10.00,   15.00]      55.3%
+flat_bullet_damage       T4         27      7.876 [   5.00,   10.00]      57.5%
+flat_bullet_damage_heavy T3         16    126.563 [ 100.00,  150.00]      53.1%
+flat_bullet_damage_heavy T4         24     76.380 [  50.00,  100.00]      52.8%
+flat_evasion             T3         31     27.506 [  20.00,   35.00]      50.0%
+flat_evasion             T4         59     15.453 [  10.00,   20.00]      54.5%
+flat_explosive_damage    T3         23     11.429 [   6.00,   18.00]      45.2%
+flat_explosive_damage    T4         30      6.953 [   3.00,   12.00]      43.9%
+flat_explosive_damage_heavy T3         23    124.961 [  60.00,  180.00]      54.1%
+flat_explosive_damage_heavy T4         19     66.888 [  30.00,  120.00]      41.0%
+flat_incendiary_damage   T3         17     12.627 [  10.00,   15.00]      52.5%
+flat_incendiary_damage   T4         29      7.284 [   5.00,   10.00]      45.7%
+flat_incendiary_damage_heavy T3         18    119.568 [ 100.00,  150.00]      39.1%
+flat_incendiary_damage_heavy T4         20     77.391 [  50.00,  100.00]      54.8%
+flat_life                T3         37     49.970 [  40.00,   60.00]      49.8%
+flat_life                T4         48     30.915 [  20.00,   40.00]      54.6%
+flat_thorns              T3         32      6.957 [   5.00,    9.00]      48.9%
+flat_thorns              T4         53      3.536 [   2.00,    5.00]      51.2%
+increased_weapon_damage  T3         47      0.427 [   0.35,    0.50]      51.6%
+increased_weapon_damage  T4         50      0.284 [   0.20,    0.35]      55.8%
+life_regen               T3         68      1.489 [   1.00,    2.00]      48.9%
+life_regen               T4         80      0.757 [   0.50,    1.00]      51.5%
+movement_speed           T3         70      0.065 [   0.05,    0.08]      50.9%
+movement_speed           T4         89      0.040 [   0.03,    0.05]      50.1%
+reduced_melee_damage     T3         63      0.109 [   0.08,    0.14]      48.2%
+reduced_melee_damage     T4         83      0.058 [   0.04,    0.08]      46.0%
+reduced_ranged_damage    T3         61      0.110 [   0.08,    0.14]      49.5%
+reduced_ranged_damage    T4         75      0.061 [   0.04,    0.08]      52.4%

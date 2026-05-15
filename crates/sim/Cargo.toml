@@ -16,3 +16,6 @@ head2box-content = { path = "../content" }
 rand = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
