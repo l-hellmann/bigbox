@@ -55,4 +55,18 @@
         armor: 50.0,
         evasion: 0.0,
     ),
+    // ---------- bosses ----------
+    // Patient Zero — the original infected. Endgame target: big enough HP
+    // that low-rarity gear feels punishing, modest armor (not Fat Zombie's
+    // 50 — boss isn't an "armor tank" archetype, it's an "endurance" one).
+    // Phase mechanics defer until a behavior system exists to phase against.
+    (
+        id: "patient_zero",
+        name: "Patient Zero",
+        category: "boss",
+        ilvl: 50,
+        max_life: 3000.0,
+        armor: 100.0,
+        evasion: 0.0,
+    ),
 ]

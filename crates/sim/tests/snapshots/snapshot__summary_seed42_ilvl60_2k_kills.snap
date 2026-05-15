@@ -27,11 +27,11 @@ rocket_launcher          2.439s     1.526s     0.919s     0.459s          —
 shotgun                  2.710s     1.562s     0.931s     0.407s          —
 smg                      1.951s     1.228s     0.661s     0.292s     0.254s
 
-TTK by enemy          Swarm Rusher   Fast Zombie       Spitter  Basic Zombie    Fat Zombie
-pistol                      0.543s        1.190s        1.518s        1.725s        9.478s
-rocket_launcher             0.632s        1.384s        1.766s        2.006s        8.473s
-shotgun                     0.682s        1.495s        1.907s        2.167s        9.764s
-smg                         0.491s        1.077s        1.373s        1.560s       11.869s
+TTK by enemy          Swarm Rusher   Fast Zombie       Spitter  Basic Zombie    Fat Zombie  Patient Zero
+pistol                      0.543s        1.190s        1.518s        1.725s        9.478s       90.423s
+rocket_launcher             0.632s        1.384s        1.766s        2.006s        8.473s       66.907s
+shotgun                     0.682s        1.495s        1.907s        2.167s        9.764s       81.458s
+smg                         0.491s        1.077s        1.373s        1.560s       11.869s      131.223s
 
 Affix                            tier    count   avg_roll  theoretical_range   fill_pct
 crit_chance                      T1         10      0.529 [   0.45,    0.65]      39.4%
