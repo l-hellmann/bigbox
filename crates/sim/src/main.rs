@@ -6,6 +6,9 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use h2b_core::{ItemInstance, Rarity, item::RolledAffix, roll::roll_item};
 
+mod summary;
+use summary::Summary;
+
 #[derive(Parser, Debug)]
 #[command(name = "h2b-sim", about = "head2box loot drop simulator")]
 struct Args {
@@ -17,6 +20,9 @@ struct Args {
     seed: u64,
     #[arg(long, default_value = "crates/content/data")]
     content_dir: PathBuf,
+    /// Print distribution tables instead of per-row CSV.
+    #[arg(long)]
+    summary: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -29,19 +35,28 @@ fn main() -> anyhow::Result<()> {
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
-    writeln!(out, "kill,rarity,base,ilvl,n_affixes,affixes")?;
-
-    for kill in 0..args.kills {
-        let rarity = roll_rarity(&mut rng);
-        let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
-        write_row(&mut out, kill, &item)?;
+    if args.summary {
+        let mut sum = Summary::new();
+        for _ in 0..args.kills {
+            let rarity = roll_rarity(&mut rng);
+            let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
+            sum.record(&item);
+        }
+        sum.print(&mut out, &affixes, args.seed, args.monster_level)?;
+    } else {
+        writeln!(out, "kill,rarity,base,ilvl,n_affixes,affixes")?;
+        for kill in 0..args.kills {
+            let rarity = roll_rarity(&mut rng);
+            let item = roll_item(&mut rng, &bases, &affixes, args.monster_level, rarity)?;
+            write_row(&mut out, kill, &item)?;
+        }
     }
 
     Ok(())
 }
 
 /// Placeholder rarity distribution. Real tuning happens once we eyeball the
-/// first CSV — that's the whole point of the sim.
+/// first summary — that's the whole point of the sim.
 fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
     let r = rng.gen_range(0..100);
     if r < 5 {
