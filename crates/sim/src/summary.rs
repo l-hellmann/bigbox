@@ -237,7 +237,7 @@ impl Summary {
 
         writeln!(
             out,
-            "{:<24} {:>4} {:>8} {:>10} {:>19} {:>10}",
+            "{:<32} {:>4} {:>8} {:>10} {:>18} {:>10}",
             "Affix", "tier", "count", "avg_roll", "theoretical_range", "fill_pct"
         )?;
         for ((affix_id, tier), s) in &self.by_affix_tier {
@@ -255,7 +255,7 @@ impl Summary {
             };
             writeln!(
                 out,
-                "{:<24} T{:<3} {:>8} {:>10.3} [{:>7.2}, {:>7.2}] {:>9.1}%",
+                "{:<32} T{:<3} {:>8} {:>10.3} [{:>7.2}, {:>7.2}] {:>9.1}%",
                 affix_id, tier, s.count, avg, theo_min, theo_max, fill
             )?;
         }
