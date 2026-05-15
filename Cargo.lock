@@ -229,6 +229,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "head2box-procgen"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "rand",
+ "serde",
+]
+
+[[package]]
 name = "head2box-sim"
 version = "0.1.0"
 dependencies = [

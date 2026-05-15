@@ -1,0 +1,17 @@
+[package]
+name = "head2box-procgen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Procedural level generation for head2box. Deterministic from seed; renderer-agnostic."
+
+[lib]
+name = "h2b_procgen"
+
+[dependencies]
+serde = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
