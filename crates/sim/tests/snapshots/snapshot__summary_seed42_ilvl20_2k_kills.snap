@@ -21,6 +21,12 @@ shotgun                   303   15.15%      67.52      4.718
 smg                       273   13.65%      92.51      4.695
 tactical_vest             295   14.75%       0.00          —
 
+TTK by rarity             Basic     Common       Rare       Epic  Legendary
+pistol                   5.057s     3.363s     2.092s     1.852s     5.057s
+rocket_launcher          5.057s     3.239s     2.170s     1.445s     5.057s
+shotgun                  5.861s     3.332s     1.998s     0.742s          —
+smg                      6.187s     3.302s     1.601s     1.045s     6.187s
+
 Affix                    tier    count   avg_roll   theoretical_range   fill_pct
 crit_chance              T3         30      0.254 [   0.20,    0.30]      53.5%
 crit_chance              T4         27      0.142 [   0.10,    0.20]      42.0%

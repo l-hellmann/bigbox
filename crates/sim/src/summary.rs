@@ -27,6 +27,14 @@ struct BaseSum {
     /// don't drag the average toward zero.
     weapon_count: u32,
     sum_ttk: f64,
+    /// Per-rarity TTK breakdown; indexed by `Rarity::index()`.
+    ttk_by_rarity: [TtkAccum; Rarity::ALL.len()],
+}
+
+#[derive(Default, Clone, Copy)]
+struct TtkAccum {
+    weapon_count: u32,
+    sum_ttk: f64,
 }
 
 struct AffixTierSum {
@@ -87,6 +95,9 @@ impl Summary {
         if ttk > 0.0 {
             base.weapon_count += 1;
             base.sum_ttk += ttk as f64;
+            let acc = &mut base.ttk_by_rarity[item.rarity.index()];
+            acc.weapon_count += 1;
+            acc.sum_ttk += ttk as f64;
         }
 
         for a in item.prefixes.iter().chain(item.suffixes.iter()) {
@@ -172,6 +183,32 @@ impl Summary {
             )?;
         }
         writeln!(out)?;
+
+        let any_weapon = self.by_base.values().any(|s| s.weapon_count > 0);
+        if any_weapon {
+            write!(out, "{:<20}", "TTK by rarity")?;
+            for rarity in Rarity::ALL {
+                write!(out, " {:>10}", format!("{rarity:?}"))?;
+            }
+            writeln!(out)?;
+            for (base, sum) in &self.by_base {
+                if sum.weapon_count == 0 {
+                    continue;
+                }
+                write!(out, "{:<20}", base)?;
+                for rarity in Rarity::ALL {
+                    let acc = &sum.ttk_by_rarity[rarity.index()];
+                    if acc.weapon_count > 0 {
+                        let avg = acc.sum_ttk / acc.weapon_count as f64;
+                        write!(out, " {:>9.3}s", avg)?;
+                    } else {
+                        write!(out, " {:>10}", "—")?;
+                    }
+                }
+                writeln!(out)?;
+            }
+            writeln!(out)?;
+        }
 
         writeln!(
             out,
