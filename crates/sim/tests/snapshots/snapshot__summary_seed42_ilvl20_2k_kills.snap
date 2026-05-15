@@ -33,6 +33,14 @@ rocket_launcher             0.644s        1.410s        1.798s        2.043s    
 shotgun                     0.691s        1.514s        1.931s        2.194s        9.886s       82.467s
 smg                         0.481s        1.054s        1.344s        1.527s       11.534s      127.186s
 
+Kills to reach             L5      L10      L20      L30
+Swarm Rusher              200      900     3800     8700
+Fast Zombie                67      300     1267     2900
+Spitter                    50      225      950     2175
+Basic Zombie              100      450     1900     4350
+Fat Zombie                 20       90      380      870
+Patient Zero                2        9       38       87
+
 Affix                            tier    count   avg_roll  theoretical_range   fill_pct
 crit_chance                      T3         30      0.257 [   0.20,    0.30]      57.4%
 crit_chance                      T4         29      0.145 [   0.10,    0.20]      44.9%

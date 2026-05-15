@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-use h2b_core::{Affix, Enemy, ItemInstance, Rarity};
+use h2b_core::{Affix, Enemy, ItemInstance, Rarity, progression};
 
 pub struct Summary {
     drops: u32,
@@ -282,6 +282,32 @@ impl Summary {
                         } else {
                             write!(out, " {:>13}", "—")?;
                         }
+                    }
+                    writeln!(out)?;
+                }
+                writeln!(out)?;
+            }
+
+            // Kills to reach each milestone level, per enemy. Invariant
+            // relative to the run's RNG — pure function of xp_value × the
+            // progression curve — but shown alongside TTK so the designer
+            // sees "how long to kill" and "how many to level" together.
+            let milestones: [u8; 4] = [5, 10, 20, 30];
+            if !enemies.is_empty() && enemies.iter().any(|e| e.xp_value > 0) {
+                write!(out, "{:<20}", "Kills to reach")?;
+                for lvl in milestones {
+                    write!(out, " {:>8}", format!("L{lvl}"))?;
+                }
+                writeln!(out)?;
+                for e in enemies {
+                    if e.xp_value == 0 {
+                        continue;
+                    }
+                    write!(out, "{:<20}", e.name)?;
+                    for lvl in milestones {
+                        let xp_needed = progression::xp_to_reach(lvl);
+                        let kills = xp_needed.div_ceil(e.xp_value as u64);
+                        write!(out, " {:>8}", kills)?;
                     }
                     writeln!(out)?;
                 }
