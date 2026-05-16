@@ -34,7 +34,7 @@ Reference: `.attic/context/spacetime-db.md` has the docs snapshot.
 
 Retrofitting netcode is expensive even with SpacetimeDB. Three habits, adopted now, keep multiplayer cheap to add without slowing single-player iteration:
 
-1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer.
+1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer. *Already concrete in v1*: `h2b_game::Command::{Move, Fire}`; the macroquad layer never mutates the world directly, it just emits commands into `World::apply`.
 2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. On the coop branch, this state becomes the SpacetimeDB table schema; if it can't serialize, it can't replicate.
 3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()` (use `ctx.timestamp` once we're in reducer-land), no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the load-bearing property for both client-side prediction and reducer rollback.
 
@@ -79,7 +79,10 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
   /content        ✅ RON files: affixes, base items, attachments, enemies (+ loaders)
   /sim            ✅ CLI loot simulator (CSV + summary modes, snapshot-locked)
   /procgen        ✅ BSP map generation, flow-field pathing, weighted spawn placement
-  /game           ⏳ the actual game (rendering, input, game loop) — not yet started
+  /procgen-viz    ✅ CLI visualizer for procgen output (map / flow / spawn picks)
+  /game           ✅ macroquad shell: window, WASD movement (wall sliding), mouse-aimed
+                     shooting (projectiles + wall collision). Enemies + hit detection +
+                     loot pickup still pending — see Initial scope below.
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
 /web              ⏳ wasm bundling, index.html, JS shim
 ```
@@ -217,7 +220,9 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - ⏳ **Biomes:** 1 — deferred; BSP procgen produces a single aesthetic for now, biome variation layers on later.
 - ⏳ **Room templates:** 20 — deferred; v1 uses generic BSP rooms. Hand-authored templates can stitch in when content scope demands it.
 - ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
-- ⏳ **Game runtime:** macroquad window + input + render loop + entity tick. Not started; this is what's left to make the project an actual playable demo.
+- ✅ **Game runtime (window + movement + shooting):** macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting. Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here.
+- ⏳ **Game runtime (enemies + hit detection + loot pickup):** spawn enemies into the live world via `pick_spawn_points`, path them with `FlowField`, run projectile-vs-target collisions through `core::combat::resolve_hit`, and pop `ItemInstance` drops on kill that the player walks over to pick up.
+- ⏳ **Persistence:** IndexedDB save on debounce (web target). The "tab closed mid-fight" path needs to work before save format gets locked.
 
 ---
 
