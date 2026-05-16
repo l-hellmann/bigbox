@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/content", "crates/procgen", "crates/procgen-viz", "crates/sim"]
+members = ["crates/core", "crates/content", "crates/game", "crates/procgen", "crates/procgen-viz", "crates/sim"]
 
 [workspace.package]
 edition = "2024"
@@ -16,3 +16,4 @@ ron = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 insta = "1"
+macroquad = "0.4"

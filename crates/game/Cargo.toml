@@ -1,0 +1,18 @@
+[package]
+name = "head2box-game"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Runtime layer for head2box — macroquad window, input, render loop."
+
+[lib]
+name = "h2b_game"
+
+[[bin]]
+name = "h2b-game"
+path = "src/main.rs"
+
+[dependencies]
+head2box-procgen = { path = "../procgen" }
+macroquad = { workspace = true }
