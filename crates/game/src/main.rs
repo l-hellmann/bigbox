@@ -1,17 +1,15 @@
 //! macroquad shell: window, input collection, render loop. The state
 //! mutations all live in `h2b_game::World`; this file is the runtime
-//! adapter — keystrokes → `Command`s, world tick, draw.
+//! adapter — keystrokes + mouse → `Command`s, world tick, draw.
 
-use h2b_game::{Command, Player, World};
+use h2b_game::{Command, Player, Projectile, World};
 use h2b_procgen::{Map, MapParams, Tile, generate_bsp};
 use macroquad::prelude::*;
 
 /// Pixels per tile. The default map is 80×40, so 16px = 1280×640 — fits a
 /// reasonable window without scrolling for the first cut.
 const TILE_SIZE: f32 = 16.0;
-/// Player movement speed in tiles per second.
-const PLAYER_SPEED: f32 = 6.0;
-/// Map seed — wired via env var for now (`H2B_SEED=N`), defaults to 42.
+
 fn map_seed() -> u64 {
     std::env::var("H2B_SEED")
         .ok()
@@ -43,20 +41,45 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             break;
         }
-        for cmd in collect_input() {
-            world.apply(cmd, dt, PLAYER_SPEED);
+
+        let aim = aim_vector(&world.player);
+        for cmd in collect_input(aim) {
+            world.apply(cmd, dt);
         }
+        world.tick(dt);
 
         clear_background(BLACK);
         draw_map(&world.map);
+        for p in &world.projectiles {
+            draw_projectile(p);
+        }
         draw_player(&world.player);
+        draw_crosshair(aim, &world.player);
         draw_hud(&world, seed);
 
         next_frame().await;
     }
 }
 
-fn collect_input() -> Vec<Command> {
+/// Mouse cursor (pixels) → normalized aim vector in tile-space relative to
+/// the player. Returns `None` only at the degenerate point where the cursor
+/// sits exactly on the player.
+fn aim_vector(p: &Player) -> Option<(f32, f32)> {
+    let (mx, my) = mouse_position();
+    let dx = (mx / TILE_SIZE) - p.x;
+    let dy = (my / TILE_SIZE) - p.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-3 {
+        None
+    } else {
+        Some((dx / len, dy / len))
+    }
+}
+
+fn collect_input(aim: Option<(f32, f32)>) -> Vec<Command> {
+    let mut cmds = Vec::new();
+
+    // Movement
     let mut dx = 0.0_f32;
     let mut dy = 0.0_f32;
     if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
@@ -71,14 +94,23 @@ fn collect_input() -> Vec<Command> {
     if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
         dx += 1.0;
     }
-    if dx == 0.0 && dy == 0.0 {
-        return Vec::new();
+    if dx != 0.0 || dy != 0.0 {
+        let len = (dx * dx + dy * dy).sqrt();
+        cmds.push(Command::Move {
+            dx: dx / len,
+            dy: dy / len,
+        });
     }
-    let len = (dx * dx + dy * dy).sqrt();
-    vec![Command::Move {
-        dx: dx / len,
-        dy: dy / len,
-    }]
+
+    // Fire — continuous while LMB or space held. World enforces cooldown.
+    let fire_held = is_mouse_button_down(MouseButton::Left) || is_key_down(KeyCode::Space);
+    if fire_held {
+        if let Some((adx, ady)) = aim {
+            cmds.push(Command::Fire { dx: adx, dy: ady });
+        }
+    }
+
+    cmds
 }
 
 fn draw_map(map: &Map) {
@@ -111,12 +143,45 @@ fn draw_player(p: &Player) {
     );
 }
 
+fn draw_projectile(p: &Projectile) {
+    let r = TILE_SIZE * 0.15;
+    draw_circle(
+        p.x * TILE_SIZE,
+        p.y * TILE_SIZE,
+        r,
+        Color::new(1.0, 0.9, 0.4, 1.0),
+    );
+}
+
+/// Faint line from the player along the aim direction so the player can see
+/// where they're pointing without staring at the mouse cursor.
+fn draw_crosshair(aim: Option<(f32, f32)>, p: &Player) {
+    let Some((dx, dy)) = aim else { return };
+    let len_tiles = 2.0;
+    let start = (p.x * TILE_SIZE, p.y * TILE_SIZE);
+    let end = (
+        (p.x + dx * len_tiles) * TILE_SIZE,
+        (p.y + dy * len_tiles) * TILE_SIZE,
+    );
+    draw_line(
+        start.0,
+        start.1,
+        end.0,
+        end.1,
+        1.0,
+        Color::new(0.6, 0.6, 0.65, 0.4),
+    );
+}
+
 fn draw_hud(world: &World, seed: u64) {
     let y = (world.map.height as f32 * TILE_SIZE) + 18.0;
     draw_text(
         &format!(
-            "WASD / arrows — move    ESC — quit    seed: {seed}    pos: ({:.1}, {:.1})",
-            world.player.x, world.player.y
+            "WASD/arrows move  |  LMB or Space shoot  |  ESC quit  \
+             |  seed: {seed}  pos: ({:.1}, {:.1})  shots in flight: {}",
+            world.player.x,
+            world.player.y,
+            world.projectiles.len(),
         ),
         8.0,
         y,
