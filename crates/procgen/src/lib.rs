@@ -11,7 +11,9 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
 pub mod flow;
+pub mod spawn;
 pub use flow::{FlowField, UNREACHABLE};
+pub use spawn::pick_spawn_points;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tile {
