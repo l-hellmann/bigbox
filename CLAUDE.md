@@ -71,17 +71,17 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
 
 ---
 
-## Repo layout (proposed)
+## Repo layout
 
 ```
 /crates
-  /game           # the actual game (rendering, input, game loop)
-  /core           # pure logic: stats, affixes, items, combat math — no rendering, no IO
-  /content        # RON files: affixes, base items, enemies, encounter tables
-  /sim            # CLI loot simulator (see "Build this first")
-  /procgen        # level generation
-/assets           # sprites, audio (placeholder/CC0 until art pipeline exists)
-/web              # wasm bundling, index.html, JS shim
+  /core           ✅ pure logic: stats, affixes, items, combat math, progression, upgrades
+  /content        ✅ RON files: affixes, base items, attachments, enemies (+ loaders)
+  /sim            ✅ CLI loot simulator (CSV + summary modes, snapshot-locked)
+  /procgen        ✅ BSP map generation, flow-field pathing, weighted spawn placement
+  /game           ⏳ the actual game (rendering, input, game loop) — not yet started
+/assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
+/web              ⏳ wasm bundling, index.html, JS shim
 ```
 
 Keep `core` free of rendering and IO dependencies. It must compile and run in a headless test or CLI sim without dragging in macroquad. This is the single most important architectural rule — it's what makes the loot simulator possible and what keeps unit tests fast.
@@ -110,7 +110,7 @@ Three layers:
 
 1. **BaseItem** — what is this (Pistol, Combat Helmet, …). Has intrinsic stats (per-shot damage, fire rate, base life/armor/evasion, …), a `slot` (where it equips), and a `category` used to filter eligible affixes. Weapon categories split by archetype — `rapid_fire` (pistol, SMG) vs `heavy` (shotgun, rocket launcher) — so flat-damage affix ranges can be calibrated per class (a +10 flat bullet roll is 100 DPS on an SMG vs 5 DPS on a rocket — content compensates instead of trying to express it through a single formula).
 2. **Affix** — a rollable modifier template. Has tiers (T1 best → T6 worst), each gated by item level with a weight and stat roll ranges. Has a `group` (mutual exclusion within a group on one item) and `tags` (for crafting later).
-3. **ItemInstance** — what actually dropped. Stores base, ilvl, rarity, rolled prefixes/suffixes, and **the seed**. Always store the seed — it enables compact saves, debugging, shareable item codes, and replay.
+3. **ItemInstance** — what actually dropped. Stores base, ilvl, rarity, rolled prefixes/suffixes, and **the seed**. Always store the seed — it enables compact saves, debugging, shareable item codes, and replay. Also carries `upgrade_tier` (0..=5, player-applied — see "Upgrades and attachments") and `attached` (list of attachment template IDs slotted on this item).
 
 ### Rarities
 
@@ -126,7 +126,7 @@ Five tiers; each differs along two axes — **affix count** and **tier floor** (
 
 The tier floor is what makes Epic and Legendary feel like real upgrades rather than "Rare with one more roll." A Legendary at ilvl 60 cannot roll worse than T2 on any affix slot.
 
-Cap each side at 3 prefixes / 3 suffixes — the affix count above splits across both. At low ilvl, the tier floor may exceed what's currently eligible (e.g. Legendary at ilvl 20 has no T2 affixes available); for v1 the sim is allowed to surface that as "rolled fewer affixes than the band," and we'll add an ilvl-gated rarity downgrade once it actually bites.
+Cap each side at 3 prefixes / 3 suffixes — the affix count above splits across both. If the requested rarity's tier floor can't be filled at this ilvl (e.g. a Legendary at ilvl 20 — T2 needs ilvl 40), `Rarity::downgrade_to_satisfiable` walks down to the highest rarity whose floor *is* achievable. Mirrors Diablo's level-gated drops: endgame rarities just don't appear before the content supports them.
 
 ### Roll pipeline
 
@@ -143,9 +143,34 @@ Cap each side at 3 prefixes / 3 suffixes — the affix count above splits across
 6. Compute display name from prefix + base + suffix fragments
 ```
 
+### Upgrades and attachments
+
+Two player-side layers on top of rolled drops, both Diablo-shaped (no crafting currencies, no scour loops):
+
+- **Upgrade tier** (`ItemInstance.upgrade_tier`, 0..=5). Each drop starts at tier 0; players spend `scrap` (from disenchanting other drops) to bump it. Each tier scales every aggregated stat by +8% — so a fully upgraded item is 1.40× its drop output. Scrap economy in `core::upgrade`: disenchant value is rarity-based (1 / 3 / 10 / 30 / 100), upgrade cost is geometric (5 / 15 / 40 / 100 / 250 — 410 total to max). No refund on disenchant so over-investment has a real cost.
+- **Attachments** (`ItemInstance.attached`). Static modifier packs (no rolling for v1) slotted into compatible weapon slots: optic / magazine / barrel / stock. Each `BaseItem.attachment_slots` lists which slots a weapon has. `core::attach::try_attach` is the single validating entry point — checks slot existence, category compatibility, and one-attachment-per-slot, mutating only on success.
+
+Aggregation flows: `core::aggregate_item` folds intrinsics + rolled affixes + attachment modifiers through the three-tier formula, then applies upgrade scaling at the end. Single canonical "what does this item do" entry point.
+
+### Combat
+
+Two layers on the same primitives, sharing the same `Combatant` / `Weapon` types:
+
+- **Expected-value** (`dps_against`, `time_to_kill`) — no RNG. The design/balance lens; what the sim's avg_dps / TTK columns measure.
+- **Stochastic** (`resolve_hit`, `simulate_fight`) — RNG threaded through, per-shot dodge and crit rolls. The realtime tick loop's view. A property test (`stochastic_mean_ttk_tracks_expected`) over 200 fights ties the two layers together so they can't drift silently.
+
+Defenses: dodge = `evasion / (evasion + 100)` capped at 50%; armor mitigation = `armor / (armor + 10 × hit_damage)` capped at 85% — diminishing returns, big hits punch through harder than small ones. The armor curve is why rocket beats SMG against the boss while SMG beats rocket against unarmored swarms; no special-cased "AP weapon" content needed for that texture.
+
 ### Procgen
 
-Deferred design decision — likely chunk-based with hand-authored room templates stitched together, but TBD. Flow fields for enemy pathing once levels are traversable (compute once per player-tile-change, every enemy reads cheaply).
+Approach decided: **BSP** (binary space partition). Recursive rect-splitting, one room per leaf, L-corridors connecting sibling room centers on the way back up. Deterministic from a `u64` seed; renderer-agnostic.
+
+Companion systems in the same crate:
+
+- **`FlowField`** — 4-connected BFS distance field from a goal (typically the player), computed once per player-tile-change. Enemies read `next_step_from(x, y)` in O(1) — classic BoxHead-style swarm convergence with no per-enemy pathing work. A connectivity property test ("every Floor on a BSP map is reachable from spawn") doubles as a procgen invariant.
+- **`pick_spawn_points`** — Floor tiles weighted linearly by distance from goal, filtered by `min_distance`, no duplicates. Avoids "swarm spawns on top of the player" without special casing.
+
+Hand-authored room templates and biomes are deferred — BSP rooms are enough scaffolding for v1, templates layer on top later when content scope demands them.
 
 ---
 
@@ -156,39 +181,43 @@ Deferred design decision — likely chunk-based with hand-authored room template
 - **Sprite batching:** one draw call per texture atlas per frame. Pack aggressively.
 - **Content is data, not code.** Affixes, base items, enemies, drop tables → RON files in `/crates/content`. Hot-reload in dev builds.
 - **Determinism:** seeded RNG threaded through all generation. Every drop, every map, every encounter should be reproducible from `(world_seed, event_id)`.
-- **Tests:** `core` crate has unit tests for stat math and roll mechanics. These run on native, fast.
+- **Tests:** `core` has unit tests for stat math, roll mechanics, combat, aggregation, attachments, progression. `procgen` has BFS / connectivity / spawn-bias property tests. `sim` has snapshot tests (`insta`) that lock CSV + summary output for fixed seeds. Run native, all fast.
 - **Error handling:** `Result` + `thiserror` for library errors. `anyhow` only at binary boundaries.
 
 ---
 
-## Build this first: the loot simulator
+## The loot simulator (built — keep using it)
 
-Before any rendering, before procgen, before combat — build the CLI in `/crates/sim` that:
+`crates/sim` is the project's primary tuning tool. Built first, before rendering / procgen / combat had any callers, exactly as the original plan called for. **Run it whenever content or roll math changes.**
 
-1. Loads affix/base content from RON
-2. Takes `--monster-level N --kills M --seed S` as args
-3. Runs M drop rolls
-4. Dumps results to CSV: `rarity, base, ilvl, affixes, total_dps_estimate, ...`
+```
+cargo run -p head2box-sim -- --monster-level 60 --kills 20000 --seed 42 --summary
+```
 
-Eyeball the distributions. Are T1 affixes appearing at the right rate? Is the average rare interesting? Does the curve feel right at ilvl 20 vs 60? Catch tuning problems in seconds instead of hours.
+Two modes:
 
-This is the single highest-leverage tool for an ARPG. Probably a day of work once `core` exists.
+- **CSV** (default): one row per drop with columns `kill, rarity, base, ilvl, n_affixes, dps_estimate, ttk_estimate, affixes`. Pipe into `duckdb` / `pandas` for ad-hoc slicing.
+- **`--summary`**: distribution tables in one screen — rarity counts, per-base avg_dps / avg_ttk / kit_dps / kit_ttk (with optimal attachments slotted), per-rarity TTK breakdown, per-enemy TTK matrix, kills-to-reach-each-level table, and per-affix tier histograms with avg_roll vs theoretical range.
+
+Eyeballing the summary answers: are T1 affixes appearing at the right rate? Does the average Rare feel meaningfully better than a Common? Is each weapon archetype best against something? How grindy is each enemy? Snapshot tests lock the output for `seed=42, ilvl=20` and `seed=42, ilvl=60` so accidental regressions in roll / aggregate / combat math fail fast.
 
 ---
 
 ## Initial scope (v1 — playable demo)
 
-Deliberately tight. Expand only after this is fun.
+Deliberately tight. Expand only after this is fun. Status markers track current state — ✅ done, ⏳ remaining.
 
-- **Weapons:** 4 archetypes in 2 categories — `rapid_fire` (pistol, SMG) and `heavy` (shotgun, rocket launcher). Category drives damage-affix calibration; see BaseItem under Core systems.
-- **Armor:** 3 slots — helm, chest, boots
-- **Affixes:** ~20 per category × 4 tiers (skip T5/T6 for now)
-- **Rarities:** 5-tier (Basic / Common / Rare / Epic / Legendary) — see Rarities under Core systems. Standalone uniques deferred.
-- **Enemies:** 5 types, BoxHead-style — basic zombie, fast zombie, fat/tank, ranged spitter, swarm rusher
-- **Bosses:** 1
-- **Biomes:** 1
-- **Room templates:** 20
-- **Progression:** XP curve to level ~30, simple passive tree (~40 nodes) or skip passive tree for v1
+- ✅ **Weapons:** 4 archetypes in 2 categories — `rapid_fire` (pistol, SMG) and `heavy` (shotgun, rocket launcher). Category drives damage-affix calibration; see BaseItem under Core systems.
+- ✅ **Armor:** 3 slots — helm, chest, boots
+- ✅ **Affixes:** 20 affixes × 4 tiers (T5/T6 skipped per scope)
+- ✅ **Attachments:** 9 templates across 4 slot types (optic / magazine / barrel / stock)
+- ✅ **Rarities:** 5-tier (Basic / Common / Rare / Epic / Legendary) with tier-floor and ilvl-gated downgrade. Standalone uniques deferred.
+- ✅ **Enemies:** 5 types — basic zombie, fast zombie, fat/tank, ranged spitter, swarm rusher
+- ✅ **Bosses:** 1 (Patient Zero)
+- ⏳ **Biomes:** 1 — deferred; BSP procgen produces a single aesthetic for now, biome variation layers on later.
+- ⏳ **Room templates:** 20 — deferred; v1 uses generic BSP rooms. Hand-authored templates can stitch in when content scope demands it.
+- ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
+- ⏳ **Game runtime:** macroquad window + input + render loop + entity tick. Not started; this is what's left to make the project an actual playable demo.
 
 ---
 
@@ -217,7 +246,7 @@ Deliberately tight. Expand only after this is fun.
 
 ## Open questions to resolve early
 
-1. macroquad vs Bevy — start with macroquad, but set a tripwire: if we end up reinventing systems/queries, switch.
+1. macroquad vs Bevy — start with macroquad, but set a tripwire: if we end up reinventing systems/queries, switch. **Still open** — game runtime not yet started.
 2. Save format versioning strategy — bump-on-break with migrations, or backwards-compatible? Decide before the first persistent save.
-3. Procgen approach — BSP, WFC, chunk-stitched, or hybrid? Defer until combat + loot are proven.
+3. ~~Procgen approach — BSP, WFC, chunk-stitched, or hybrid?~~ **Resolved: BSP**. Recursive space-partition with L-corridor connections, deterministic from seed. Hand-authored room templates can layer on top later if needed; the BSP cleanly partitions the work.
 4. Audio stack — `kira` is the current best-in-class for Rust games, works in wasm. Confirm at the point audio matters.
