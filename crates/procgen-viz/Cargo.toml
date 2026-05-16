@@ -1,0 +1,17 @@
+[package]
+name = "head2box-procgen-viz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI visualizer for the procgen output (map + flow field + spawn placement)."
+
+[[bin]]
+name = "h2b-procgen-viz"
+path = "src/main.rs"
+
+[dependencies]
+head2box-procgen = { path = "../procgen" }
+rand = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

@@ -238,6 +238,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "head2box-procgen-viz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "head2box-procgen",
+ "rand",
+]
+
+[[package]]
 name = "head2box-sim"
 version = "0.1.0"
 dependencies = [
