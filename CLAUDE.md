@@ -80,9 +80,11 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
   /sim            ✅ CLI loot simulator (CSV + summary modes, snapshot-locked)
   /procgen        ✅ BSP map generation, flow-field pathing, weighted spawn placement
   /procgen-viz    ✅ CLI visualizer for procgen output (map / flow / spawn picks)
-  /game           ✅ macroquad shell: window, WASD movement (wall sliding), mouse-aimed
-                     shooting (projectiles + wall collision). Enemies + hit detection +
-                     loot pickup still pending — see Initial scope below.
+  /game           ✅ boxy-3D macroquad shell: window, WASD movement (wall sliding),
+                     mouse-aimed shooting (ground-plane raycast aim), wave-spawned
+                     enemies (FlowField pathing), projectile hit detection via
+                     core::resolve_hit, loot drops + walk-over pickup, contact damage,
+                     death/restart. Angled BoxHead follow-cam.
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
 /web              ⏳ wasm bundling, index.html, JS shim
 ```
@@ -220,8 +222,8 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - ⏳ **Biomes:** 1 — deferred; BSP procgen produces a single aesthetic for now, biome variation layers on later.
 - ⏳ **Room templates:** 20 — deferred; v1 uses generic BSP rooms. Hand-authored templates can stitch in when content scope demands it.
 - ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
-- ✅ **Game runtime (window + movement + shooting):** macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting. Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here.
-- ⏳ **Game runtime (enemies + hit detection + loot pickup):** spawn enemies into the live world via `pick_spawn_points`, path them with `FlowField`, run projectile-vs-target collisions through `core::combat::resolve_hit`, and pop `ItemInstance` drops on kill that the player walks over to pick up.
+- ✅ **Game runtime (window + movement + shooting):** boxy-3D macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor raycast onto the ground plane). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here.
+- ✅ **Game runtime (enemies + hit detection + loot pickup):** waves spawn via `pick_spawn_points`, path to the player with `FlowField` (recomputed per player-tile-change), take projectile hits through `core::combat::resolve_hit` (enemy armor/dodge applies), and on death award XP + roll an `ItemInstance` drop the player walks over to collect. Touching enemies drain life; zero life → death + restart. Loot rolls and spawns are seeded per-event from `(world_seed, event_id)`; every enemy/drop carries a stable id (the eventual table key + interpolation match key). No player loadout yet — bullet damage/fire rate are still constants, not gear-derived.
 - ⏳ **Persistence:** IndexedDB save on debounce (web target). The "tab closed mid-fight" path needs to work before save format gets locked.
 
 ---

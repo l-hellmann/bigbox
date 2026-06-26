@@ -14,5 +14,8 @@ name = "h2b-game"
 path = "src/main.rs"
 
 [dependencies]
+head2box-core = { path = "../core" }
+head2box-content = { path = "../content" }
 head2box-procgen = { path = "../procgen" }
+rand = { workspace = true }
 macroquad = { workspace = true }

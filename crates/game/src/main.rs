@@ -8,8 +8,17 @@
 //! maps to world `(x, _, y)` — world **X = tile x**, world **Z = tile y**,
 //! world **Y = up**. So gameplay coords need no translation; only height (Y)
 //! is invented here at the render layer.
+//!
+//! Content (enemy roster, base items, affixes) is loaded from RON on the
+//! **native** target via the filesystem. The wasm target can't read files at
+//! runtime — that build will `include_str!` the content instead, swapped in
+//! when wasm packaging lands (a separate ⏳ scope item).
 
-use h2b_game::{Command, Player, Projectile, World};
+use std::path::Path;
+
+use h2b_core::progression::level_for_total_xp;
+use h2b_core::Rarity;
+use h2b_game::{Command, Content, EnemyInstance, LootDrop, Player, Projectile, World};
 use h2b_procgen::{MapParams, Tile, generate_bsp};
 use macroquad::prelude::*;
 
@@ -39,7 +48,7 @@ fn map_seed() -> u64 {
 }
 
 fn window_conf() -> Conf {
-Conf {
+    Conf {
         window_title: "head2box".into(),
         window_width: 1280,
         window_height: 720,
@@ -47,20 +56,39 @@ Conf {
     }
 }
 
+/// Load RON content from `crates/content/data`, resolved relative to this
+/// crate so it works regardless of the working directory. Native-only.
+fn load_content() -> Content {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../content/data");
+    Content {
+        enemies: h2b_content::load_enemies(&dir.join("enemies.ron")).expect("load enemies.ron"),
+        bases: h2b_content::load_bases(&dir.join("bases.ron")).expect("load bases.ron"),
+        affixes: h2b_content::load_affixes(&dir.join("affixes.ron")).expect("load affixes.ron"),
+    }
+}
+
+fn new_world(seed: u64) -> World {
+    World::new(generate_bsp(&MapParams {
+        seed,
+        ..Default::default()
+    }))
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let seed = map_seed();
-    let map = generate_bsp(&MapParams {
-        seed,
-        ..Default::default()
-    });
-    let mut world = World::new(map);
+    let content = load_content();
+    let mut world = new_world(seed);
 
     loop {
         let dt = get_frame_time();
 
         if is_key_pressed(KeyCode::Escape) {
             break;
+        }
+        // Restart from the dead screen.
+        if world.game_over && is_key_pressed(KeyCode::R) {
+            world = new_world(seed);
         }
 
         // Build the follow-cam first: aim raycasting needs it to unproject
@@ -72,16 +100,16 @@ async fn main() {
         for cmd in collect_input(aim) {
             world.apply(cmd, dt);
         }
-        world.tick(dt);
+        world.tick(dt, &content);
 
         // ---- 3D pass ----
         clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
         set_camera(&camera);
-        draw_scene(&world, aim_hit);
+        draw_scene(&world, &content, aim_hit);
 
         // ---- 2D overlay pass ----
         set_default_camera();
-        draw_hud(&world, seed);
+        draw_hud(&world);
 
         next_frame().await;
     }
@@ -179,19 +207,19 @@ fn collect_input(aim: Option<(f32, f32)>) -> Vec<Command> {
 
     // Fire — continuous while LMB or space held. World enforces cooldown.
     let fire_held = is_mouse_button_down(MouseButton::Left) || is_key_down(KeyCode::Space);
-    if fire_held {
-        if let Some((adx, ady)) = aim {
-            cmds.push(Command::Fire { dx: adx, dy: ady });
-        }
+    if fire_held && let Some((adx, ady)) = aim {
+        cmds.push(Command::Fire { dx: adx, dy: ady });
     }
 
     cmds
 }
 
 /// Draw the full 3D scene: ground plane, extruded wall cubes (distance
-/// culled), player, projectiles, and the aim line/marker.
-fn draw_scene(world: &World, aim_hit: Option<Vec3>) {
+/// culled), enemies, ground drops (with loot beams), player, projectiles,
+/// and the aim line/marker.
+fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
     let map = &world.map;
+    let (px, py) = (world.player.x, world.player.y);
 
     // Floor: one big plane under everything. `size` is the half-extent, so
     // it spans the full map when centered at the middle.
@@ -208,7 +236,6 @@ fn draw_scene(world: &World, aim_hit: Option<Vec3>) {
     // gives the crisp boxy edge BoxHead reads by.
     let wall = Color::new(0.20, 0.20, 0.24, 1.0);
     let edge = Color::new(0.05, 0.05, 0.07, 1.0);
-    let (px, py) = (world.player.x, world.player.y);
     let r2 = RENDER_RADIUS * RENDER_RADIUS;
     for ty in 0..map.height {
         for tx in 0..map.width {
@@ -225,6 +252,17 @@ fn draw_scene(world: &World, aim_hit: Option<Vec3>) {
             draw_cube(center, size, None, wall);
             draw_cube_wires(center, size, edge);
         }
+    }
+
+    // Drops: a small cube plus a vertical rarity-colored loot beam so they're
+    // spottable across the room.
+    for d in &world.drops {
+        draw_drop(d);
+    }
+
+    // Enemies: per-archetype colored cubes sitting on the floor.
+    for e in &world.enemies {
+        draw_enemy(e, content);
     }
 
     // Player: a green cube sitting on the floor.
@@ -252,24 +290,113 @@ fn draw_scene(world: &World, aim_hit: Option<Vec3>) {
     }
 }
 
+fn draw_enemy(e: &EnemyInstance, content: &Content) {
+    let id = content
+        .enemies
+        .get(e.archetype)
+        .map(|a| a.id.as_str())
+        .unwrap_or("");
+    let (color, half) = enemy_visual(id);
+    let center = vec3(e.x, half, e.y);
+    let size = vec3(half * 2.0, half * 2.0, half * 2.0);
+    draw_cube(center, size, None, color);
+    draw_cube_wires(center, size, Color::new(0.05, 0.02, 0.02, 1.0));
+}
+
+/// (color, half-extent) per enemy archetype. Bigger, redder reads as tankier.
+fn enemy_visual(id: &str) -> (Color, f32) {
+    match id {
+        "swarm_rusher" => (Color::new(0.80, 0.50, 0.30, 1.0), 0.28),
+        "fast_zombie" => (Color::new(0.90, 0.70, 0.20, 1.0), 0.30),
+        "spitter" => (Color::new(0.50, 0.80, 0.40, 1.0), 0.34),
+        "basic_zombie" => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38),
+        "fat_zombie" => (Color::new(0.55, 0.20, 0.50, 1.0), 0.58),
+        "patient_zero" => (Color::new(0.95, 0.10, 0.10, 1.0), 0.85),
+        _ => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38),
+    }
+}
+
+fn draw_drop(d: &LootDrop) {
+    let color = rarity_color(d.item.rarity);
+    draw_cube(vec3(d.x, 0.18, d.y), vec3(0.3, 0.3, 0.3), None, color);
+    // Loot beam — a vertical line, brighter rarities literally stand taller.
+    let beam_top = 1.0 + d.item.rarity.index() as f32 * 0.6;
+    draw_line_3d(vec3(d.x, 0.0, d.y), vec3(d.x, beam_top, d.y), color);
+}
+
+fn rarity_color(r: Rarity) -> Color {
+    match r {
+        Rarity::Basic => Color::new(0.70, 0.70, 0.70, 1.0),
+        Rarity::Common => Color::new(0.45, 0.70, 1.00, 1.0),
+        Rarity::Rare => Color::new(1.00, 0.85, 0.20, 1.0),
+        Rarity::Epic => Color::new(0.70, 0.30, 1.00, 1.0),
+        Rarity::Legendary => Color::new(1.00, 0.50, 0.10, 1.0),
+    }
+}
+
 fn draw_projectile(p: &Projectile) {
     let c = vec3(p.x, 0.5, p.y);
     let s = vec3(0.22, 0.22, 0.22);
     draw_cube(c, s, None, Color::new(1.0, 0.9, 0.4, 1.0));
 }
 
-fn draw_hud(world: &World, seed: u64) {
+/// 2D overlay: health bar, run stats, and the dead screen.
+fn draw_hud(world: &World) {
+    // Health bar, top-left.
+    let (bx, by, bw, bh) = (12.0, 12.0, 260.0, 22.0);
+    draw_rectangle(bx, by, bw, bh, Color::new(0.15, 0.05, 0.05, 0.9));
+    let frac = (world.player.current_life / world.player.max_life).clamp(0.0, 1.0);
+    draw_rectangle(bx, by, bw * frac, bh, Color::new(0.85, 0.20, 0.20, 1.0));
+    draw_rectangle_lines(bx, by, bw, bh, 2.0, Color::new(0.0, 0.0, 0.0, 1.0));
     draw_text(
         &format!(
-            "WASD/arrows move  |  LMB or Space shoot  |  ESC quit  \
-             |  seed: {seed}  pos: ({:.1}, {:.1})  shots in flight: {}",
-            world.player.x,
-            world.player.y,
-            world.projectiles.len(),
+            "{:.0} / {:.0}",
+            world.player.current_life, world.player.max_life
         ),
+        bx + 8.0,
+        by + 17.0,
+        20.0,
+        WHITE,
+    );
+
+    // Run stats line.
+    let level = level_for_total_xp(world.xp);
+    let stats = format!(
+        "Lv {level}   kills {}   xp {}   enemies {}   loot {}",
+        world.kills,
+        world.xp,
+        world.enemies.len(),
+        world.inventory.len(),
+    );
+    draw_text(&stats, 12.0, 56.0, 22.0, Color::new(0.85, 0.85, 0.85, 1.0));
+
+    if let Some(last) = &world.last_pickup {
+        draw_text(
+            &format!("picked up: {last}"),
+            12.0,
+            78.0,
+            18.0,
+            Color::new(0.7, 0.85, 0.7, 1.0),
+        );
+    }
+
+    // Controls hint, bottom.
+    draw_text(
+        "WASD move  |  LMB / Space shoot  |  ESC quit",
         12.0,
         screen_height() - 16.0,
-        20.0,
-        Color::new(0.75, 0.75, 0.75, 1.0),
+        18.0,
+        Color::new(0.55, 0.55, 0.55, 1.0),
     );
+
+    if world.game_over {
+        let cx = screen_width() * 0.5;
+        let cy = screen_height() * 0.5;
+        let msg = "YOU DIED";
+        let d = measure_text(msg, None, 64, 1.0);
+        draw_text(msg, cx - d.width * 0.5, cy, 64.0, Color::new(0.9, 0.1, 0.1, 1.0));
+        let sub = "press R to restart";
+        let d2 = measure_text(sub, None, 28, 1.0);
+        draw_text(sub, cx - d2.width * 0.5, cy + 40.0, 28.0, WHITE);
+    }
 }

@@ -8,14 +8,31 @@
 //! 3. The runtime layer never gets to mutate state directly — input is
 //!    funneled through `Command` variants which are trivially serializable
 //!    (habit #1).
+//!
+//! ## Determinism / netcode posture
+//!
+//! Per CLAUDE.md: "every drop reproducible from `(world_seed, event_id)`."
+//! We hold `world_seed` + a monotonic `event_seq` and seed a **fresh RNG per
+//! event** (each spawn batch, each hit, each loot roll) rather than threading
+//! one long-lived stream. That maps cleanly onto the coop branch where each
+//! event becomes an independent reducer call — no shared stream position to
+//! reconstruct. Every spawned enemy and dropped item also carries a stable
+//! `u64` id: the table primary key server-side, and the match key a client
+//! needs to interpolate an entity across position snapshots. Projectiles get
+//! no persistent id — they're ephemeral, client-replayed from their spawn.
 
-use h2b_procgen::{Map, Tile};
+use h2b_core::roll::roll_item;
+use h2b_core::{Affix, BaseItem, Combatant, Enemy, ItemInstance, Rarity, Weapon, resolve_hit};
+use h2b_procgen::{FlowField, Map, Tile, pick_spawn_points};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 // ---------- tunables ----------
 //
-// Hardcoded for v1 — these come from the equipped weapon's aggregated stats
-// once loot is wired into the runtime. Encoded as constants for now so the
-// values are visible and adjustable in one place.
+// Hardcoded for v1 — the weapon-derived ones (speed, fire rate, damage) come
+// from the equipped item's aggregated stats once loot is wired into the
+// player loadout. Encoded as constants for now so the values are visible and
+// adjustable in one place.
 
 /// Player movement speed in tiles per second.
 pub const PLAYER_SPEED: f32 = 6.0;
@@ -23,12 +40,36 @@ pub const PLAYER_SPEED: f32 = 6.0;
 pub const PROJECTILE_SPEED: f32 = 24.0;
 /// Shots per second; reciprocal is the per-shot cooldown.
 pub const FIRE_RATE: f32 = 4.0;
-/// Damage applied on a projectile-vs-target hit. (No targets yet — values
-/// the future hit-detection layer will read.)
+/// Damage applied on a projectile-vs-enemy hit. Folded into a one-shot
+/// `Weapon` so `core::combat::resolve_hit` can apply the enemy's armor/dodge.
 pub const BULLET_DAMAGE: f32 = 12.0;
 /// Hard cap on how long a projectile can live before it despawns, in seconds.
-/// Wall collision usually kills shots much earlier; this is the fail-safe.
 pub const BULLET_LIFETIME: f32 = 1.5;
+
+/// Player starting / max life. Invented here; becomes gear-derived once armor
+/// items feed the player's aggregated stats.
+pub const PLAYER_MAX_LIFE: f32 = 100.0;
+/// An enemy within this distance (tiles) of the player deals contact damage.
+pub const CONTACT_RANGE: f32 = 0.6;
+/// Damage-per-second a touching enemy applies. Enemies have no attack profile
+/// in content yet (see `core::enemy`), so melee is a flat game-layer rate for
+/// now — replace with per-archetype attack stats when those land.
+pub const CONTACT_DPS: f32 = 8.0;
+/// How close (tiles) a projectile must pass to an enemy to count as a hit.
+pub const PROJECTILE_HIT_RADIUS: f32 = 0.45;
+/// How close (tiles) the player must be to a ground drop to pick it up.
+pub const PICKUP_RADIUS: f32 = 0.7;
+/// Seconds between spawn waves.
+pub const SPAWN_INTERVAL: f32 = 3.0;
+/// Enemies attempted per wave (capped by `MAX_ENEMIES`).
+pub const SPAWN_BATCH: usize = 4;
+/// Hard cap on concurrent live enemies.
+pub const MAX_ENEMIES: usize = 40;
+/// Minimum spawn distance (tiles, flow-field steps) from the player so a wave
+/// never materializes on top of them.
+pub const SPAWN_MIN_DISTANCE: u32 = 12;
+/// Probability a kill drops an item at all. Rarity is rolled separately.
+pub const DROP_CHANCE: f32 = 0.35;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Player {
@@ -36,6 +77,8 @@ pub struct Player {
     /// renderer multiplies by tile size to get screen pixels.
     pub x: f32,
     pub y: f32,
+    pub max_life: f32,
+    pub current_life: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,26 +93,133 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
+/// A live enemy in the world. `archetype` indexes into [`Content::enemies`]
+/// for the static profile (name, xp, ilvl); the mutable combat state lives in
+/// `combatant`. `id` is stable for the entity's lifetime.
+#[derive(Debug, Clone)]
+pub struct EnemyInstance {
+    pub id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub archetype: usize,
+    pub combatant: Combatant,
+    /// Movement speed in tiles per second (per-archetype, see [`archetype_speed`]).
+    pub speed: f32,
+}
+
+/// An item lying on the ground waiting to be walked over.
+#[derive(Debug, Clone)]
+pub struct LootDrop {
+    pub id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub item: ItemInstance,
+}
+
+/// Static, loaded-once content the runtime reads but never mutates. Passed by
+/// reference into [`World::tick`] so the dynamic `World` stays purely
+/// serializable game state (the eventual SpacetimeDB table shape) with no
+/// content baggage. Loaded from RON in `main.rs`; `core`/the lib stay IO-free.
+#[derive(Debug, Clone, Default)]
+pub struct Content {
+    pub enemies: Vec<Enemy>,
+    pub bases: Vec<BaseItem>,
+    pub affixes: Vec<Affix>,
+}
+
+impl Content {
+    /// Empty content — no enemies spawn, no loot rolls. Handy for tests that
+    /// only exercise movement / projectiles.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 pub struct World {
     pub map: Map,
     pub player: Player,
     pub projectiles: Vec<Projectile>,
+    pub enemies: Vec<EnemyInstance>,
+    pub drops: Vec<LootDrop>,
+    /// Items the player has walked over and picked up. No equip/stash UI yet —
+    /// pickups just accumulate here so the loot loop is observable.
+    pub inventory: Vec<ItemInstance>,
     /// Seconds until the player's next shot becomes available.
     pub player_fire_cooldown: f32,
+    pub kills: u32,
+    pub xp: u64,
+    /// Display string for the most recent pickup (HUD feedback). `None` until
+    /// the first item is collected.
+    pub last_pickup: Option<String>,
+    /// Set once the player's life hits zero. `tick` becomes a no-op; the
+    /// runtime layer decides whether to restart.
+    pub game_over: bool,
+
+    // --- determinism / event sourcing (not part of the public render view) ---
+    world_seed: u64,
+    event_seq: u64,
+    next_entity_id: u64,
+
+    // --- pathing ---
+    flow: FlowField,
+    /// The player tile the current `flow` was computed for. Recomputed only
+    /// when the player crosses into a new tile (CLAUDE.md: once per
+    /// player-tile-change, not per frame).
+    flow_goal: (u32, u32),
+
+    spawn_timer: f32,
 }
 
 impl World {
     pub fn new(map: Map) -> Self {
         let (sx, sy) = map.player_spawn;
+        let goal = (sx, sy);
+        let world_seed = map.seed;
+        let flow = FlowField::compute(&map, goal);
         Self {
             player: Player {
                 x: sx as f32 + 0.5,
                 y: sy as f32 + 0.5,
+                max_life: PLAYER_MAX_LIFE,
+                current_life: PLAYER_MAX_LIFE,
             },
             projectiles: Vec::new(),
+            enemies: Vec::new(),
+            drops: Vec::new(),
+            inventory: Vec::new(),
             player_fire_cooldown: 0.0,
+            kills: 0,
+            xp: 0,
+            last_pickup: None,
+            game_over: false,
+            world_seed,
+            event_seq: 0,
+            next_entity_id: 0,
+            flow,
+            flow_goal: goal,
+            spawn_timer: SPAWN_INTERVAL,
             map,
         }
+    }
+
+    /// A fresh RNG keyed on `(world_seed, event_seq)`, advancing the event
+    /// counter. SplitMix64-style avalanche so adjacent event ids don't yield
+    /// correlated streams. This is the reproducibility seam: any single event
+    /// (a spawn wave, a hit, a drop) replays from its `(world_seed, event_id)`.
+    fn next_event_rng(&mut self) -> StdRng {
+        let id = self.event_seq;
+        self.event_seq += 1;
+        let mut z = self.world_seed ^ id.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        StdRng::seed_from_u64(z)
+    }
+
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.next_entity_id;
+        self.next_entity_id += 1;
+        id
     }
 }
 
@@ -90,7 +240,11 @@ impl World {
     /// Apply one command. Movement uses **per-axis collision** so the player
     /// slides along walls instead of getting hard-stopped on diagonals. Fire
     /// respects `player_fire_cooldown` and silently drops if not ready.
+    /// No-op once `game_over` is set.
     pub fn apply(&mut self, cmd: Command, dt: f32) {
+        if self.game_over {
+            return;
+        }
         match cmd {
             Command::Move { dx, dy } => {
                 let step = PLAYER_SPEED * dt;
@@ -128,18 +282,45 @@ impl World {
         }
     }
 
-    /// Advance time-based state by `dt` seconds. Apply this **after**
-    /// command resolution each frame so newly-fired projectiles get one
-    /// frame of motion before the next render. Order in main: collect →
-    /// apply → tick → draw.
-    pub fn tick(&mut self, dt: f32) {
-        // Cooldown decay.
+    /// Advance time-based state by `dt` seconds. Apply this **after** command
+    /// resolution each frame so newly-fired projectiles get one frame of
+    /// motion before the next render. Order in main: collect → apply → tick →
+    /// draw.
+    ///
+    /// `content` supplies enemy archetypes and the loot tables; pass
+    /// [`Content::empty`] to run pure movement/projectile simulation.
+    pub fn tick(&mut self, dt: f32, content: &Content) {
+        if self.game_over {
+            return;
+        }
         self.player_fire_cooldown = (self.player_fire_cooldown - dt).max(0.0);
 
-        // Advance projectiles in place; despawn on wall hit, OOB, or
-        // lifetime expiry. swap_remove keeps it O(1) per drop. Copy fields
-        // out first so the passability check can borrow `self` immutably
-        // without fighting the active mutable borrow.
+        self.update_flow();
+        self.resolve_projectiles(dt, content);
+        self.move_enemies(dt);
+        self.apply_contact_damage(dt);
+        self.collect_pickups();
+        self.update_spawning(dt, content);
+
+        if self.player.current_life <= 0.0 {
+            self.game_over = true;
+        }
+    }
+
+    /// Recompute the flow field only when the player crosses a tile boundary.
+    fn update_flow(&mut self) {
+        let tile = (self.player.x as u32, self.player.y as u32);
+        if tile != self.flow_goal {
+            self.flow = FlowField::compute(&self.map, tile);
+            self.flow_goal = tile;
+        }
+    }
+
+    /// Advance projectiles; despawn on enemy hit, wall hit, OOB, or lifetime
+    /// expiry. On an enemy hit, damage routes through `core::combat::resolve_hit`
+    /// (so enemy armor/evasion applies) and a kill may roll a drop. `swap_remove`
+    /// keeps removal O(1).
+    fn resolve_projectiles(&mut self, dt: f32, content: &Content) {
         let mut i = 0;
         while i < self.projectiles.len() {
             let p = self.projectiles[i];
@@ -150,15 +331,170 @@ impl World {
             }
             let nx = p.x + p.vx * dt;
             let ny = p.y + p.vy * dt;
+
+            if let Some(ei) = self.enemy_at(nx, ny) {
+                let weapon = Weapon {
+                    damage_per_shot: p.damage,
+                    fire_rate: 0.0,
+                    crit_chance: 0.0,
+                    crit_multiplier: 1.0,
+                };
+                let mut rng = self.next_event_rng();
+                resolve_hit(&mut rng, &weapon, &mut self.enemies[ei].combatant);
+                self.projectiles.swap_remove(i);
+                if self.enemies[ei].combatant.current_life <= 0.0 {
+                    self.kill_enemy(ei, content);
+                }
+                continue;
+            }
+
             if !self.is_passable(nx, ny) {
                 self.projectiles.swap_remove(i);
                 continue;
             }
+
             let slot = &mut self.projectiles[i];
             slot.x = nx;
             slot.y = ny;
             slot.lifetime = new_life;
             i += 1;
+        }
+    }
+
+    /// Index of the first enemy whose center is within `PROJECTILE_HIT_RADIUS`
+    /// of `(x, y)`, if any.
+    fn enemy_at(&self, x: f32, y: f32) -> Option<usize> {
+        let r2 = PROJECTILE_HIT_RADIUS * PROJECTILE_HIT_RADIUS;
+        self.enemies.iter().position(|e| {
+            let dx = e.x - x;
+            let dy = e.y - y;
+            dx * dx + dy * dy <= r2
+        })
+    }
+
+    /// Remove a dead enemy, award XP, and roll a possible loot drop at its
+    /// position. The drop roll is one event keyed on `(world_seed, event_id)`.
+    fn kill_enemy(&mut self, ei: usize, content: &Content) {
+        let dead = self.enemies.swap_remove(ei);
+        self.kills += 1;
+
+        let (xp_value, ilvl) = match content.enemies.get(dead.archetype) {
+            Some(a) => (a.xp_value as u64, a.ilvl),
+            None => (0, 1),
+        };
+        self.xp += xp_value;
+
+        if content.bases.is_empty() {
+            return;
+        }
+        let mut rng = self.next_event_rng();
+        if rng.r#gen::<f32>() >= DROP_CHANCE {
+            return;
+        }
+        let rarity = roll_rarity(&mut rng);
+        if let Ok(item) = roll_item(&mut rng, &content.bases, &content.affixes, ilvl, rarity) {
+            let id = self.alloc_id();
+            self.drops.push(LootDrop {
+                id,
+                x: dead.x,
+                y: dead.y,
+                item,
+            });
+        }
+    }
+
+    /// Steer every enemy one step toward the player along the flow field.
+    /// At the goal tile (no downhill neighbor) they home straight onto the
+    /// player so they don't stall a tile away.
+    fn move_enemies(&mut self, dt: f32) {
+        let (px, py) = (self.player.x, self.player.y);
+        for e in &mut self.enemies {
+            let (tx, ty) = (e.x as u32, e.y as u32);
+            let target = match self.flow.next_step_from(tx, ty) {
+                Some((nx, ny)) => (nx as f32 + 0.5, ny as f32 + 0.5),
+                None => (px, py),
+            };
+            let dx = target.0 - e.x;
+            let dy = target.1 - e.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-4 {
+                let step = (e.speed * dt).min(len);
+                e.x += dx / len * step;
+                e.y += dy / len * step;
+            }
+        }
+    }
+
+    /// Drain life from the player for each enemy in contact range this tick.
+    fn apply_contact_damage(&mut self, dt: f32) {
+        let (px, py) = (self.player.x, self.player.y);
+        let r2 = CONTACT_RANGE * CONTACT_RANGE;
+        let touching = self
+            .enemies
+            .iter()
+            .filter(|e| {
+                let dx = e.x - px;
+                let dy = e.y - py;
+                dx * dx + dy * dy <= r2
+            })
+            .count();
+        if touching > 0 {
+            let dmg = CONTACT_DPS * dt * touching as f32;
+            self.player.current_life = (self.player.current_life - dmg).max(0.0);
+        }
+    }
+
+    /// Move any ground drops within pickup range into the inventory.
+    fn collect_pickups(&mut self) {
+        let (px, py) = (self.player.x, self.player.y);
+        let r2 = PICKUP_RADIUS * PICKUP_RADIUS;
+        let mut i = 0;
+        while i < self.drops.len() {
+            let dx = self.drops[i].x - px;
+            let dy = self.drops[i].y - py;
+            if dx * dx + dy * dy <= r2 {
+                let picked = self.drops.swap_remove(i);
+                self.last_pickup = Some(format!("{:?} {}", picked.item.rarity, picked.item.base));
+                self.inventory.push(picked.item);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    /// Spawn a wave on the timer, placed by `pick_spawn_points` (distance-biased,
+    /// never on the player). Archetype is a uniform pick for v1 — weighted
+    /// spawn tables come with biomes later.
+    fn update_spawning(&mut self, dt: f32, content: &Content) {
+        if content.enemies.is_empty() {
+            return;
+        }
+        self.spawn_timer -= dt;
+        if self.spawn_timer > 0.0 || self.enemies.len() >= MAX_ENEMIES {
+            // Reset the timer even when capped, so we don't dump a burst the
+            // instant headroom opens up.
+            if self.spawn_timer <= 0.0 {
+                self.spawn_timer = SPAWN_INTERVAL;
+            }
+            return;
+        }
+        self.spawn_timer = SPAWN_INTERVAL;
+
+        let budget = (MAX_ENEMIES - self.enemies.len()).min(SPAWN_BATCH);
+        let mut rng = self.next_event_rng();
+        let points = pick_spawn_points(&mut rng, &self.flow, budget, SPAWN_MIN_DISTANCE);
+        for (tx, ty) in points {
+            let idx = rng.gen_range(0..content.enemies.len());
+            let arch = &content.enemies[idx];
+            let id = self.alloc_id();
+            self.enemies.push(EnemyInstance {
+                id,
+                x: tx as f32 + 0.5,
+                y: ty as f32 + 0.5,
+                archetype: idx,
+                combatant: arch.as_combatant(),
+                speed: archetype_speed(&arch.id),
+            });
         }
     }
 
@@ -179,9 +515,38 @@ impl World {
     }
 }
 
+/// Per-archetype movement speed (tiles/sec), keyed by enemy `id`. All slower
+/// than `PLAYER_SPEED` (6.0) so the player can kite. Unknown ids fall back to
+/// the baseline zombie pace.
+pub fn archetype_speed(id: &str) -> f32 {
+    match id {
+        "fast_zombie" => 4.5,
+        "swarm_rusher" => 4.0,
+        "spitter" => 3.2,
+        "basic_zombie" => 3.0,
+        "patient_zero" => 2.2,
+        "fat_zombie" => 1.8,
+        _ => 3.0,
+    }
+}
+
+/// Weighted rarity roll matching CLAUDE.md's drop curve (per 1000): Legendary
+/// 5, Epic 25, Rare 90, Common 280, Basic 600. Ported from the sim's
+/// `roll_rarity`; retune both together.
+fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
+    match rng.gen_range(0..1000) {
+        0..=4 => Rarity::Legendary,
+        5..=29 => Rarity::Epic,
+        30..=119 => Rarity::Rare,
+        120..=399 => Rarity::Common,
+        _ => Rarity::Basic,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use h2b_core::Combatant;
     use h2b_procgen::{MapParams, generate_bsp};
 
     fn world_at_seed(seed: u64) -> World {
@@ -204,6 +569,34 @@ mod tests {
             rooms: vec![],
             seed: 0,
             player_spawn: (1, 1),
+        }
+    }
+
+    /// A test enemy archetype with the given id and life. No defenses so a
+    /// single `BULLET_DAMAGE` shot is enough to study kills.
+    fn test_enemy(id: &str, max_life: f32) -> Enemy {
+        Enemy {
+            id: id.into(),
+            name: id.into(),
+            category: "zombie".into(),
+            ilvl: 1,
+            max_life,
+            armor: 0.0,
+            evasion: 0.0,
+            xp_value: 10,
+        }
+    }
+
+    fn dummy_item() -> ItemInstance {
+        ItemInstance {
+            base: "pistol".into(),
+            ilvl: 1,
+            rarity: Rarity::Common,
+            seed: 0,
+            prefixes: vec![],
+            suffixes: vec![],
+            upgrade_tier: 0,
+            attached: vec![],
         }
     }
 
@@ -321,7 +714,7 @@ mod tests {
         let mut w = world_at_seed(42);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         // Tick past the cooldown window (1/FIRE_RATE = 0.25s).
-        w.tick(0.30);
+        w.tick(0.30, &Content::empty());
         assert_eq!(w.player_fire_cooldown, 0.0);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         assert_eq!(w.projectiles.len(), 2);
@@ -340,7 +733,7 @@ mod tests {
         let mut w = world_at_seed(42);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         let x0 = w.projectiles[0].x;
-        w.tick(0.05);
+        w.tick(0.05, &Content::empty());
         // Either advanced or died on a wall — but didn't sit still.
         if let Some(p) = w.projectiles.first() {
             assert!(p.x > x0, "projectile should have moved +x");
@@ -369,7 +762,7 @@ mod tests {
         world.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         // PROJECTILE_SPEED is 24 tiles/s; well within 0.2s a shot crosses
         // the 3-floor-wide corridor and hits the east wall.
-        world.tick(0.20);
+        world.tick(0.20, &Content::empty());
         assert!(world.projectiles.is_empty(), "projectile should hit the east wall");
     }
 
@@ -378,7 +771,7 @@ mod tests {
         let mut w = world_at_seed(42);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         // Force expiry without any wall in the way by ticking past lifetime.
-        w.tick(BULLET_LIFETIME + 0.1);
+        w.tick(BULLET_LIFETIME + 0.1, &Content::empty());
         assert!(w.projectiles.is_empty());
     }
 
@@ -386,11 +779,202 @@ mod tests {
     fn multiple_projectiles_coexist() {
         let mut w = world_at_seed(42);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
-        w.tick(0.30); // cooldown clears
+        w.tick(0.30, &Content::empty()); // cooldown clears
         w.apply(Command::Fire { dx: 0.0, dy: 1.0 }, 0.016);
-        w.tick(0.30);
+        w.tick(0.30, &Content::empty());
         w.apply(Command::Fire { dx: -1.0, dy: 0.0 }, 0.016);
         // Three distinct shots in flight (assuming none have hit walls yet).
         assert!(w.projectiles.len() >= 1);
+    }
+
+    // ---- enemies: spawning ----
+
+    #[test]
+    fn wave_spawns_after_the_interval() {
+        let mut w = world_at_seed(42);
+        let content = Content {
+            enemies: vec![test_enemy("basic_zombie", 100.0)],
+            ..Content::empty()
+        };
+        assert!(w.enemies.is_empty());
+        // One tick across the spawn interval triggers a wave.
+        w.tick(SPAWN_INTERVAL, &content);
+        assert!(!w.enemies.is_empty(), "a wave should have spawned");
+        assert!(w.enemies.len() <= SPAWN_BATCH);
+        // Spawned away from the player.
+        for e in &w.enemies {
+            let dx = e.x - w.player.x;
+            let dy = e.y - w.player.y;
+            assert!((dx * dx + dy * dy).sqrt() >= SPAWN_MIN_DISTANCE as f32 - 1.0);
+        }
+        // Every spawned entity has a unique id.
+        let mut ids: Vec<u64> = w.enemies.iter().map(|e| e.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), w.enemies.len());
+    }
+
+    #[test]
+    fn no_spawn_without_enemy_content() {
+        let mut w = world_at_seed(42);
+        w.tick(SPAWN_INTERVAL * 3.0, &Content::empty());
+        assert!(w.enemies.is_empty());
+    }
+
+    // ---- enemies: pathing ----
+
+    #[test]
+    fn enemy_converges_on_player() {
+        let mut w = world_at_seed(42);
+        // Place an enemy on the farthest reachable tile from the player.
+        let (mut far_tile, mut far_d) = ((0u32, 0u32), 0u32);
+        for ty in 0..w.map.height {
+            for tx in 0..w.map.width {
+                let d = w.flow.distance_at(tx, ty);
+                if d != h2b_procgen::UNREACHABLE && d > far_d {
+                    far_d = d;
+                    far_tile = (tx, ty);
+                }
+            }
+        }
+        w.enemies.push(EnemyInstance {
+            id: 999,
+            x: far_tile.0 as f32 + 0.5,
+            y: far_tile.1 as f32 + 0.5,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 4.0,
+        });
+        let start = w.flow.distance_at(far_tile.0, far_tile.1);
+        // Several ticks of pure pathing (no content needed for movement).
+        for _ in 0..120 {
+            w.tick(0.05, &Content::empty());
+        }
+        let e = &w.enemies[0];
+        let now = w.flow.distance_at(e.x as u32, e.y as u32);
+        assert!(now < start, "enemy should be closer to the player (flow {now} < {start})");
+    }
+
+    // ---- enemies: hit detection + kills ----
+
+    #[test]
+    fn projectile_hits_and_damages_enemy() {
+        let mut w = World::new(single_floor_map());
+        // Enemy a hair to the +x side of the player, within the same tile.
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x + 0.3,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(1000.0),
+            speed: 0.0,
+        });
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        w.tick(0.02, &Content::empty());
+        // Projectile consumed by the hit; enemy took BULLET_DAMAGE.
+        assert!(w.projectiles.is_empty(), "projectile should be consumed on hit");
+        assert!((w.enemies[0].combatant.current_life - (1000.0 - BULLET_DAMAGE)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lethal_hit_kills_awards_xp_and_can_drop() {
+        let mut w = World::new(single_floor_map());
+        let content = Content {
+            enemies: vec![test_enemy("basic_zombie", 1.0)],
+            ..Content::empty()
+        };
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x + 0.3,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(1.0), // dies to one shot
+            speed: 0.0,
+        });
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        w.tick(0.02, &content);
+        assert!(w.enemies.is_empty(), "enemy should be dead");
+        assert_eq!(w.kills, 1);
+        assert_eq!(w.xp, 10);
+        // No bases in content → no item rolled, drops stay empty.
+        assert!(w.drops.is_empty());
+    }
+
+    // ---- loot pickup ----
+
+    #[test]
+    fn walking_over_a_drop_collects_it() {
+        let mut w = World::new(single_floor_map());
+        assert!(w.inventory.is_empty());
+        w.drops.push(LootDrop {
+            id: 7,
+            x: w.player.x, // right on top of the player
+            y: w.player.y,
+            item: dummy_item(),
+        });
+        w.tick(0.016, &Content::empty());
+        assert!(w.drops.is_empty(), "drop should be collected");
+        assert_eq!(w.inventory.len(), 1);
+        assert!(w.last_pickup.is_some());
+    }
+
+    #[test]
+    fn distant_drop_is_not_collected() {
+        let mut w = world_at_seed(42);
+        w.drops.push(LootDrop {
+            id: 8,
+            x: w.player.x + 5.0,
+            y: w.player.y,
+            item: dummy_item(),
+        });
+        w.tick(0.016, &Content::empty());
+        assert_eq!(w.drops.len(), 1);
+        assert!(w.inventory.is_empty());
+    }
+
+    // ---- contact damage + game over ----
+
+    #[test]
+    fn touching_enemy_drains_life_and_can_end_the_game() {
+        let mut w = World::new(single_floor_map());
+        w.player.current_life = 1.0;
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 0.0,
+        });
+        w.tick(1.0, &Content::empty()); // CONTACT_DPS × 1s = 8 dmg > 1 life
+        assert!(w.player.current_life <= 0.0);
+        assert!(w.game_over);
+        // Once over, tick is inert.
+        let cmds_before = w.kills;
+        w.tick(1.0, &Content::empty());
+        assert_eq!(w.kills, cmds_before);
+    }
+
+    // ---- determinism of the event model ----
+
+    #[test]
+    fn same_seed_same_spawn_outcome() {
+        let content = Content {
+            enemies: vec![
+                test_enemy("basic_zombie", 100.0),
+                test_enemy("fast_zombie", 60.0),
+            ],
+            ..Content::empty()
+        };
+        let mut a = world_at_seed(7);
+        let mut b = world_at_seed(7);
+        a.tick(SPAWN_INTERVAL, &content);
+        b.tick(SPAWN_INTERVAL, &content);
+        assert_eq!(a.enemies.len(), b.enemies.len());
+        for (ea, eb) in a.enemies.iter().zip(b.enemies.iter()) {
+            assert_eq!(ea.archetype, eb.archetype);
+            assert!((ea.x - eb.x).abs() < 1e-6);
+            assert!((ea.y - eb.y).abs() < 1e-6);
+        }
     }
 }

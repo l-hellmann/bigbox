@@ -320,8 +320,11 @@ dependencies = [
 name = "head2box-game"
 version = "0.1.0"
 dependencies = [
+ "head2box-content",
+ "head2box-core",
  "head2box-procgen",
  "macroquad",
+ "rand",
 ]
 
 [[package]]
