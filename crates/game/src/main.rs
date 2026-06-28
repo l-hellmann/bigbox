@@ -14,8 +14,6 @@
 //! runtime — that build will `include_str!` the content instead, swapped in
 //! when wasm packaging lands (a separate ⏳ scope item).
 
-use std::path::Path;
-
 use h2b_core::progression::level_for_total_xp;
 use h2b_core::Rarity;
 use h2b_game::{Command, Content, EnemyInstance, LootDrop, Player, Projectile, World};
@@ -56,14 +54,20 @@ fn window_conf() -> Conf {
     }
 }
 
-/// Load RON content from `crates/content/data`, resolved relative to this
-/// crate so it works regardless of the working directory. Native-only.
+/// Content is **embedded at build time** via `include_str!`, not read from
+/// disk. That's the only thing that works on the wasm target (no filesystem)
+/// and keeps a shipped native binary self-contained — no content directory to
+/// ship alongside it. A parse failure here means malformed RON in the tree,
+/// i.e. a build-time content bug, so panicking is correct. (Dev hot-reload, if
+/// we want it, layers back as a debug-only disk override behind a `cfg`.)
 fn load_content() -> Content {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../content/data");
     Content {
-        enemies: h2b_content::load_enemies(&dir.join("enemies.ron")).expect("load enemies.ron"),
-        bases: h2b_content::load_bases(&dir.join("bases.ron")).expect("load bases.ron"),
-        affixes: h2b_content::load_affixes(&dir.join("affixes.ron")).expect("load affixes.ron"),
+        enemies: h2b_content::parse_enemies("enemies.ron", include_str!("../../content/data/enemies.ron"))
+            .expect("embedded enemies.ron"),
+        bases: h2b_content::parse_bases("bases.ron", include_str!("../../content/data/bases.ron"))
+            .expect("embedded bases.ron"),
+        affixes: h2b_content::parse_affixes("affixes.ron", include_str!("../../content/data/affixes.ron"))
+            .expect("embedded affixes.ron"),
     }
 }
 
