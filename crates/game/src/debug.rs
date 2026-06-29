@@ -87,9 +87,17 @@ impl DebugUi {
         let mut wants_pointer = false;
         egui_macroquad::ui(|ctx| {
             wants_pointer = ctx.wants_pointer_input();
-            egui::Window::new("debug · tuning  (F1)")
+            // Pinned to the right edge, full window height. `resizable` lets you
+            // widen it; the scroll area handles the tall widget stack.
+            egui::SidePanel::right("debug_panel")
                 .default_width(300.0)
-                .show(ctx, |ui| self.contents(ui, world, content, cursor_tile));
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("debug · tuning  (F1)");
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.contents(ui, world, content, cursor_tile);
+                    });
+                });
         });
         wants_pointer
     }
