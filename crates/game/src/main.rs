@@ -51,6 +51,11 @@ fn window_conf() -> Conf {
         window_title: "head2box".into(),
         window_width: 1280,
         window_height: 720,
+        // Render at the native (retina) framebuffer resolution. macroquad keeps
+        // its 2D coordinate + mouse API logical regardless, so the HUD layout is
+        // unchanged — but it gives miniquad/egui the correct DPI scale, which
+        // fixes egui pointer mapping (dropped clicks) on high-DPI displays.
+        high_dpi: true,
         ..Default::default()
     }
 }
