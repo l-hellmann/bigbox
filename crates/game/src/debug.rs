@@ -180,6 +180,7 @@ impl DebugUi {
             let t = &mut world.tunables;
             ui.add(egui::Slider::new(&mut t.player_speed, 1.0..=20.0).text("player speed"));
             ui.add(egui::Slider::new(&mut t.enemy_speed_mult, 0.0..=4.0).text("enemy speed ×"));
+            ui.add(egui::Slider::new(&mut t.los_range, 0.0..=40.0).text("LOS beeline range"));
             ui.add(egui::Slider::new(&mut t.separation_weight, 0.0..=5.0).text("separation weight"));
             ui.add(egui::Slider::new(&mut t.separation_radius, 0.0..=3.0).text("separation radius"));
         });

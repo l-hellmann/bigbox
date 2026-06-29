@@ -108,6 +108,11 @@ pub struct Tunables {
     /// lever for tuning swarm convergence / pathing pressure without touching
     /// the flow field — `1.0` is shipping behaviour.
     pub enemy_speed_mult: f32,
+    /// Max distance (tiles) at which an enemy with clear line of sight beelines
+    /// straight at the player (radial approach). Beyond it — or when a wall
+    /// blocks the line — it paths via the flow field instead. `0` disables the
+    /// beeline entirely (pure flow-field steering).
+    pub los_range: f32,
     /// Boids-style separation strength: how hard enemies push apart so a swarm
     /// rings the player instead of stacking on one point. `0` disables it.
     pub separation_weight: f32,
@@ -137,6 +142,7 @@ impl Default for Tunables {
             spawn_min_distance: SPAWN_MIN_DISTANCE,
             drop_chance: DROP_CHANCE,
             enemy_speed_mult: 1.0,
+            los_range: 20.0,
             separation_weight: 1.5,
             separation_radius: 1.0,
             auto_spawn: true,
@@ -552,15 +558,17 @@ impl World {
     }
 
     /// Goal-seek direction (normalized) for an enemy at `(ex, ey)`: a straight
-    /// beeline at the player when the line between them is wall-free, else the
-    /// smooth flow-field gradient (with the discrete-saddle fallback).
+    /// beeline at the player when they're within `los_range` *and* the line
+    /// between them is wall-free, else the smooth flow-field gradient (with the
+    /// discrete-saddle fallback). The range check also short-circuits the LOS
+    /// sampling for distant enemies.
     fn seek_dir(&self, ex: f32, ey: f32, px: f32, py: f32) -> (f32, f32) {
-        if self.line_clear(ex, ey, px, py) {
-            let (dx, dy) = (px - ex, py - ey);
-            let len = (dx * dx + dy * dy).sqrt();
-            if len > 1e-4 {
-                return (dx / len, dy / len);
-            }
+        let (dx, dy) = (px - ex, py - ey);
+        let dist2 = dx * dx + dy * dy;
+        let los = self.tunables.los_range;
+        if dist2 <= los * los && dist2 > 1e-8 && self.line_clear(ex, ey, px, py) {
+            let len = dist2.sqrt();
+            return (dx / len, dy / len);
         }
         self.flow
             .steer_from(ex, ey)
@@ -1203,6 +1211,37 @@ mod tests {
         assert!(
             (moved.0 - moved.1).abs() < 0.2 * moved.0.max(moved.1),
             "diagonal beeline should move x≈y, got {moved:?}"
+        );
+    }
+
+    #[test]
+    fn los_range_gates_the_beeline() {
+        // Shallow-diagonal offset (6 east, 1 north of the player). A beeline
+        // moves mostly along x (small y/x); the Manhattan flow field instead
+        // pulls a 45° diagonal (y ≈ x). So disabling LOS should make the
+        // approach noticeably more diagonal.
+        let run = |los: f32| -> f32 {
+            let mut w = World::new(open_room(31, 31));
+            w.tunables.los_range = los;
+            w.tunables.separation_weight = 0.0;
+            let (sx, sy) = (w.player.x - 6.0, w.player.y - 1.0);
+            w.enemies.push(EnemyInstance {
+                id: 1,
+                x: sx,
+                y: sy,
+                archetype: 0,
+                combatant: Combatant::dummy(100.0),
+                speed: 3.0,
+            });
+            w.tick(0.05, &Content::empty());
+            let e = &w.enemies[0];
+            (e.y - sy) / (e.x - sx) // y/x movement ratio
+        };
+        let beeline = run(50.0); // in range → straight at player, shallow
+        let flow = run(0.0); // LOS off → flow field, ~45°
+        assert!(
+            flow > beeline + 0.1,
+            "flow approach should be more diagonal than the beeline ({beeline} vs {flow})"
         );
     }
 
