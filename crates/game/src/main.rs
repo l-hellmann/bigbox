@@ -189,6 +189,8 @@ struct PadInput {
 #[cfg(feature = "debug")]
 pub struct PadInfo {
     pub name: String,
+    /// SDL GUID (hex) — the key a custom mapping is written against.
+    pub uuid: String,
     /// SDL mapping name, or a flag that the device is unmapped (axes/buttons
     /// won't resolve without a mapping — the usual "connected but dead" cause).
     pub mapping: String,
@@ -197,6 +199,11 @@ pub struct PadInfo {
     pub right_stick: (f32, f32),
     pub right_trigger: f32,
     pub buttons_down: Vec<&'static str>,
+    /// Raw (pre-mapping) axis code → value, for identifying which physical
+    /// stick/trigger maps to which native code on an unmapped pad.
+    pub raw_axes: Vec<(String, f32)>,
+    /// Raw button codes currently pressed.
+    pub raw_buttons: Vec<String>,
 }
 
 /// gilrs status + the list of connected pads, for the debug overlay.
@@ -287,24 +294,39 @@ mod pad {
             };
             let pads = gilrs
                 .gamepads()
-                .map(|(_, gp)| super::PadInfo {
-                    name: gp.name().to_string(),
-                    mapping: gp
-                        .map_name()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "UNMAPPED — no SDL mapping".to_string()),
-                    power: format!("{:?}", gp.power_info()),
-                    left_stick: (gp.value(Axis::LeftStickX), gp.value(Axis::LeftStickY)),
-                    right_stick: (gp.value(Axis::RightStickX), gp.value(Axis::RightStickY)),
-                    right_trigger: gp
-                        .button_data(Button::RightTrigger2)
-                        .map(|d| d.value())
-                        .unwrap_or(0.0),
-                    buttons_down: BUTTONS
-                        .iter()
-                        .filter(|(_, b)| gp.is_pressed(*b))
-                        .map(|(n, _)| *n)
-                        .collect(),
+                .map(|(_, gp)| {
+                    let st = gp.state();
+                    let raw_axes = st
+                        .axes()
+                        .map(|(code, data)| (format!("{code}"), data.value()))
+                        .collect();
+                    let raw_buttons = st
+                        .buttons()
+                        .filter(|(_, d)| d.is_pressed())
+                        .map(|(code, _)| format!("{code}"))
+                        .collect();
+                    super::PadInfo {
+                        name: gp.name().to_string(),
+                        uuid: gp.uuid().iter().map(|b| format!("{b:02x}")).collect(),
+                        mapping: gp
+                            .map_name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "UNMAPPED — no SDL mapping".to_string()),
+                        power: format!("{:?}", gp.power_info()),
+                        left_stick: (gp.value(Axis::LeftStickX), gp.value(Axis::LeftStickY)),
+                        right_stick: (gp.value(Axis::RightStickX), gp.value(Axis::RightStickY)),
+                        right_trigger: gp
+                            .button_data(Button::RightTrigger2)
+                            .map(|d| d.value())
+                            .unwrap_or(0.0),
+                        buttons_down: BUTTONS
+                            .iter()
+                            .filter(|(_, b)| gp.is_pressed(*b))
+                            .map(|(n, _)| *n)
+                            .collect(),
+                        raw_axes,
+                        raw_buttons,
+                    }
                 })
                 .collect();
             super::PadDiag {

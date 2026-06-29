@@ -446,6 +446,24 @@ fn controller_section(ui: &mut egui::Ui, diag: &crate::PadDiag) {
                     p.buttons_down.join(", ")
                 };
                 ui.label(format!("  buttons: {btns}"));
+
+                // Raw (pre-mapping) state — the data needed to build a mapping
+                // for an unmapped pad. Move each stick/trigger and watch which
+                // raw axis code changes; press buttons to see their codes.
+                if !mapped {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::LIGHT_BLUE, "  raw (for mapping):");
+                    ui.label(format!("  uuid: {}", p.uuid));
+                    for (code, val) in &p.raw_axes {
+                        ui.label(format!("    axis {code}: {val:+.2}"));
+                    }
+                    let rb = if p.raw_buttons.is_empty() {
+                        "—".to_string()
+                    } else {
+                        p.raw_buttons.join(", ")
+                    };
+                    ui.label(format!("    btn pressed: {rb}"));
+                }
             }
         });
 }
