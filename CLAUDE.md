@@ -84,7 +84,8 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
                      mouse-aimed shooting (ground-plane raycast aim), wave-spawned
                      enemies (FlowField pathing), projectile hit detection via
                      core::resolve_hit, loot drops + walk-over pickup, contact damage,
-                     death/restart. Angled BoxHead follow-cam. Live-tuning egui
+                     floating enemy health bars, death/restart. Angled BoxHead
+                     follow-cam. Live-tuning egui
                      debug overlay behind `--features debug` (runtime Tunables).
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
 /web              ⏳ wasm bundling, index.html, JS shim

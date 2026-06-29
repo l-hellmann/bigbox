@@ -463,6 +463,44 @@ fn draw_enemy(e: &EnemyInstance, content: &Content) {
     let size = vec3(half * 2.0, half * 2.0, half * 2.0);
     draw_cube(center, size, None, color);
     draw_cube_wires(center, size, Color::new(0.05, 0.02, 0.02, 1.0));
+    draw_health_bar(e, half);
+}
+
+/// Floating health bar above a damaged enemy: a dark backing cube with a
+/// green→red fill scaled to current/max life. Only drawn once the enemy has
+/// taken a hit, so a fresh swarm stays clean. World-X aligned — the fixed
+/// follow-cam renders that as a horizontal bar; the fill is nudged toward the
+/// camera (+Z) so it doesn't z-fight the backing.
+fn draw_health_bar(e: &EnemyInstance, half: f32) {
+    let max = e.combatant.max_life;
+    let cur = e.combatant.current_life;
+    if max <= 0.0 || cur >= max {
+        return;
+    }
+    let frac = (cur / max).clamp(0.0, 1.0);
+    let bar_w = (half * 2.2).max(0.5);
+    let bar_y = half * 2.0 + 0.22;
+    let bar_h = 0.1;
+    let bar_d = 0.06;
+
+    // Dark backing, slightly oversized for a border.
+    draw_cube(
+        vec3(e.x, bar_y, e.y),
+        vec3(bar_w + 0.04, bar_h + 0.03, bar_d),
+        None,
+        Color::new(0.05, 0.05, 0.06, 1.0),
+    );
+
+    // Life fill, left-aligned, colored by remaining fraction.
+    let fill_w = (bar_w * frac).max(0.001);
+    let fill_x = e.x - bar_w * 0.5 + fill_w * 0.5;
+    let fill = Color::new((1.0 - frac).min(1.0), frac.min(1.0), 0.15, 1.0);
+    draw_cube(
+        vec3(fill_x, bar_y, e.y + 0.04),
+        vec3(fill_w, bar_h, bar_d),
+        None,
+        fill,
+    );
 }
 
 /// (color, half-extent) per enemy archetype. Bigger, redder reads as tankier.
