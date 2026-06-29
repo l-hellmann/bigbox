@@ -216,11 +216,15 @@ egui panel for the questions you can only answer by playing: does enemy speed ×
 feel oppressive, is the fire rate satisfying, how dense should waves be.
 
 ```
-cargo run -p head2box-game --features debug
+cargo run -p head2box-game --features debug   # or: cargo dbg
 ```
 
 Feature-gated (`debug` → optional `egui-macroquad`), so a normal
 `cargo build`/`--release` compiles none of it. **F1** toggles the panel.
+`.cargo/config.toml` defines shortcut aliases — `cargo dbg` (BSP dungeon),
+`cargo arena`, `cargo arena-empty`. Aliases can't set env vars, so the level
+rides in as a CLI arg (`-- arena`) that `selected_level()` reads, equivalent to
+`H2B_LEVEL`.
 
 Mechanism — the load-bearing refactor: every gameplay knob that used to be a
 `const` now lives in `h2b_game::Tunables` on `World`, and the simulation reads
@@ -253,7 +257,8 @@ arena entry paths (launch and overlay button) start with **auto-spawn off** so
 you populate it deliberately rather than getting swarmed on entry.
 
 ```
-H2B_LEVEL=arena cargo run -p head2box-game --features debug
+cargo arena                                    # shortcut alias
+H2B_LEVEL=arena cargo run -p head2box-game --features debug   # equivalent
 ```
 
 Three tuning levers beyond the raw sliders:

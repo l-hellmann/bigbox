@@ -83,10 +83,15 @@ enum Level {
     ArenaEmpty,
 }
 
+/// Resolve the level from the first CLI positional arg (what the `cargo arena`
+/// alias passes via `-- arena`), falling back to the `H2B_LEVEL` env var, then
+/// the BSP dungeon.
 fn selected_level() -> Level {
-    match std::env::var("H2B_LEVEL").as_deref() {
-        Ok("arena") => Level::Arena,
-        Ok("arena-empty") => Level::ArenaEmpty,
+    let from_arg = std::env::args().nth(1);
+    let from_env = std::env::var("H2B_LEVEL").ok();
+    match from_arg.as_deref().or(from_env.as_deref()) {
+        Some("arena") => Level::Arena,
+        Some("arena-empty") => Level::ArenaEmpty,
         _ => Level::Bsp,
     }
 }
