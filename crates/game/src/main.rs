@@ -222,6 +222,10 @@ async fn main() {
         // ---- 2D overlay pass ----
         set_default_camera();
         draw_hud(&world);
+        #[cfg(feature = "debug")]
+        if dbg.show_entity_stats() {
+            draw_entity_stats(&world, &content, &camera);
+        }
 
         // ---- debug overlay (on top of everything) ----
         #[cfg(feature = "debug")]
@@ -449,6 +453,94 @@ fn draw_flow_field(world: &World) {
                 }
             }
         }
+    }
+}
+
+/// Project a world point to screen pixels using the active 3D camera matrix,
+/// or `None` if it's behind the camera. Lets the 2D pass anchor text labels to
+/// 3D entities.
+#[cfg(feature = "debug")]
+fn world_to_screen(view_proj: &Mat4, p: Vec3) -> Option<(f32, f32)> {
+    let clip = *view_proj * vec4(p.x, p.y, p.z, 1.0);
+    if clip.w <= 0.0 {
+        return None;
+    }
+    let ndc = clip.truncate() / clip.w;
+    let sx = (ndc.x * 0.5 + 0.5) * screen_width();
+    let sy = (1.0 - (ndc.y * 0.5 + 0.5)) * screen_height();
+    Some((sx, sy))
+}
+
+/// Draw a centered, stacked block of text lines anchored so the block sits
+/// *above* `(sx, sy)` (the entity's head). Small backing shadow per line for
+/// legibility over the bright cubes.
+#[cfg(feature = "debug")]
+fn draw_label(lines: &[String], sx: f32, sy: f32, color: Color) {
+    const SIZE: f32 = 14.0;
+    const LINE_H: f32 = 15.0;
+    let mut y = sy - LINE_H * lines.len() as f32;
+    for line in lines {
+        let d = measure_text(line, None, SIZE as u16, 1.0);
+        let x = sx - d.width * 0.5;
+        draw_text(line, x + 1.0, y + 1.0, SIZE, Color::new(0.0, 0.0, 0.0, 0.8));
+        draw_text(line, x, y, SIZE, color);
+        y += LINE_H;
+    }
+}
+
+/// Debug overlay: floating `Enemy` + `Combatant` stat blocks above each nearby
+/// enemy, and a `PLAYER` block above the player. Toggled from the debug panel.
+#[cfg(feature = "debug")]
+fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
+    use h2b_procgen::UNREACHABLE;
+    use macroquad::camera::Camera;
+
+    let view_proj = camera.matrix();
+    let (px, py) = (world.player.x, world.player.y);
+    let r2 = RENDER_RADIUS * RENDER_RADIUS;
+
+    for e in &world.enemies {
+        let d2 = (e.x - px).powi(2) + (e.y - py).powi(2);
+        if d2 > r2 {
+            continue;
+        }
+        let id = content
+            .enemies
+            .get(e.archetype)
+            .map(|a| a.id.as_str())
+            .unwrap_or("?");
+        let (_, half) = enemy_visual(id);
+        let head = vec3(e.x, half * 2.0 + 0.55, e.y);
+        let Some((sx, sy)) = world_to_screen(&view_proj, head) else {
+            continue;
+        };
+        let c = &e.combatant;
+        let ilvl = content.enemies.get(e.archetype).map(|a| a.ilvl).unwrap_or(0);
+        let flow_d = world.flow().distance_at(e.x as u32, e.y as u32);
+        let flow_s = if flow_d == UNREACHABLE {
+            "∞".to_string()
+        } else {
+            flow_d.to_string()
+        };
+        let lines = [
+            format!("{id} #{}  il{ilvl}", e.id),
+            format!("hp {:.0}/{:.0}", c.current_life, c.max_life),
+            format!("arm {:.0}  eva {:.0}", c.armor, c.evasion),
+            format!("spd {:.1}  d {:.1}  flow {flow_s}", e.speed, d2.sqrt()),
+        ];
+        draw_label(&lines, sx, sy, Color::new(0.97, 0.85, 0.55, 1.0));
+    }
+
+    let p = &world.player;
+    let head = vec3(px, PLAYER_HALF * 2.0 + 0.65, py);
+    if let Some((sx, sy)) = world_to_screen(&view_proj, head) {
+        let lines = [
+            "PLAYER".to_string(),
+            format!("hp {:.0}/{:.0}", p.current_life, p.max_life),
+            format!("pos {:.1}, {:.1}  cd {:.2}", p.x, p.y, world.player_fire_cooldown),
+            format!("enemies {}  proj {}", world.enemies.len(), world.projectiles.len()),
+        ];
+        draw_label(&lines, sx, sy, Color::new(0.55, 0.97, 0.62, 1.0));
     }
 }
 

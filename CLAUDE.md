@@ -279,6 +279,11 @@ Three tuning levers beyond the raw sliders:
   arrows enemies steer by (cyan arrows downhill toward the player, yellow goal
   pad), so you can see a swarm route around pillars and through gaps before
   committing pathing changes. Reads `World::flow()` (a debug-only accessor).
+- **Entity stat blocks.** "show entity stats" floats an `Enemy`/`Combatant`
+  readout above each nearby enemy (id, ilvl, hp, armor/evasion, speed, distance
+  + flow distance) and a `PLAYER` block (hp, pos, fire cooldown, live counts).
+  3D positions are projected to the 2D HUD via the camera matrix
+  (`world_to_screen`) — all read-only field access, no lib changes.
 
 ---
 

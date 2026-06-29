@@ -34,6 +34,8 @@ pub struct DebugUi {
     arena_pillars: bool,
     /// Draw the flow-field next-step arrows (read by the renderer).
     show_flow: bool,
+    /// Draw floating Enemy/Combatant + player stat blocks (read by the renderer).
+    show_entity_stats: bool,
     /// Last export/import outcome, shown under the buttons.
     status: String,
 }
@@ -55,6 +57,7 @@ impl DebugUi {
             weapon_base: 0,
             arena_pillars: true,
             show_flow: false,
+            show_entity_stats: false,
             status: String::new(),
         }
     }
@@ -69,6 +72,11 @@ impl DebugUi {
     /// Whether the renderer should draw the flow-field arrows this frame.
     pub fn show_flow(&self) -> bool {
         self.visible && self.show_flow
+    }
+
+    /// Whether the renderer should draw floating entity stat blocks this frame.
+    pub fn show_entity_stats(&self) -> bool {
+        self.visible && self.show_entity_stats
     }
 
     /// Build and apply the panel for this frame. Returns `true` while egui is
@@ -138,6 +146,7 @@ impl DebugUi {
                 }
             });
             ui.checkbox(&mut self.show_flow, "show flow field (enemy pathing)");
+            ui.checkbox(&mut self.show_entity_stats, "show entity stats (floating)");
         });
 
         ui.collapsing("combat", |ui| {
