@@ -108,6 +108,11 @@ pub struct Tunables {
     /// lever for tuning swarm convergence / pathing pressure without touching
     /// the flow field — `1.0` is shipping behaviour.
     pub enemy_speed_mult: f32,
+    /// Boids-style separation strength: how hard enemies push apart so a swarm
+    /// rings the player instead of stacking on one point. `0` disables it.
+    pub separation_weight: f32,
+    /// Radius (tiles) within which enemies repel one another.
+    pub separation_radius: f32,
     /// When false, the wave timer is suspended — useful for hand-spawning a
     /// controlled set of enemies to study one interaction at a time.
     pub auto_spawn: bool,
@@ -132,6 +137,8 @@ impl Default for Tunables {
             spawn_min_distance: SPAWN_MIN_DISTANCE,
             drop_chance: DROP_CHANCE,
             enemy_speed_mult: 1.0,
+            separation_weight: 1.5,
+            separation_radius: 1.0,
             auto_spawn: true,
             god_mode: false,
         }
@@ -491,37 +498,50 @@ impl World {
         }
     }
 
-    /// Steer every enemy toward the player along the flow field, using the
-    /// smooth gradient (`steer_from`) so motion is continuous and bends around
-    /// walls/pillars instead of hopping tile-center to tile-center. Fallbacks:
-    /// the discrete next-step at a symmetric saddle (where the smooth gradient
-    /// cancels), then homing straight at the player on the goal tile. Movement
-    /// is per-axis so an enemy grazing a wall slides along it rather than
-    /// clipping in.
+    /// Move every enemy toward the player, blending a **goal-seek** direction
+    /// with **boids separation** so the swarm rings the player instead of
+    /// funneling onto one tile.
+    ///
+    /// Goal-seek (`seek_dir`): if the enemy has line of sight to the player it
+    /// beelines straight at them — radial from any angle, which avoids the
+    /// flow field's Manhattan "approach at 45° then snap to an axis" artifact.
+    /// Only when a wall blocks the line does it fall back to the smooth
+    /// flow-field gradient (`steer_from`) to route around it.
+    ///
+    /// Two passes so separation reads a consistent snapshot: pass 1 computes
+    /// each enemy's blended unit direction (all immutable reads), pass 2 applies
+    /// it with per-axis wall slide.
     fn move_enemies(&mut self, dt: f32) {
         let (px, py) = (self.player.x, self.player.y);
         let speed_mult = self.tunables.enemy_speed_mult;
-        // Borrow the immutable fields up front so they read as disjoint from
-        // the `&mut self.enemies` loop below.
-        let flow = &self.flow;
+        let sep_weight = self.tunables.separation_weight;
+
+        let n = self.enemies.len();
+        let mut dirs: Vec<(f32, f32)> = Vec::with_capacity(n);
+        for i in 0..n {
+            let (ex, ey) = (self.enemies[i].x, self.enemies[i].y);
+            let (skx, sky) = self.seek_dir(ex, ey, px, py);
+            let (spx, spy) = self.separation(i);
+            let mut dx = skx + spx * sep_weight;
+            let mut dy = sky + spy * sep_weight;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-4 {
+                dx /= len;
+                dy /= len;
+            } else {
+                // Seek and separation cancel — hold position (ring equilibrium).
+                dx = 0.0;
+                dy = 0.0;
+            }
+            dirs.push((dx, dy));
+        }
+
         let map = &self.map;
-        for e in &mut self.enemies {
-            let dir = flow
-                .steer_from(e.x, e.y)
-                .or_else(|| flow.next_step_dir(e.x, e.y))
-                .unwrap_or_else(|| {
-                    // On/at the goal tile: home straight at the player.
-                    let (dx, dy) = (px - e.x, py - e.y);
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len > 1e-4 {
-                        (dx / len, dy / len)
-                    } else {
-                        (0.0, 0.0)
-                    }
-                });
+        for (i, e) in self.enemies.iter_mut().enumerate() {
+            let (dx, dy) = dirs[i];
             let step = e.speed * speed_mult * dt;
-            let nx = e.x + dir.0 * step;
-            let ny = e.y + dir.1 * step;
+            let nx = e.x + dx * step;
+            let ny = e.y + dy * step;
             if floor_at(map, nx, e.y) {
                 e.x = nx;
             }
@@ -529,6 +549,67 @@ impl World {
                 e.y = ny;
             }
         }
+    }
+
+    /// Goal-seek direction (normalized) for an enemy at `(ex, ey)`: a straight
+    /// beeline at the player when the line between them is wall-free, else the
+    /// smooth flow-field gradient (with the discrete-saddle fallback).
+    fn seek_dir(&self, ex: f32, ey: f32, px: f32, py: f32) -> (f32, f32) {
+        if self.line_clear(ex, ey, px, py) {
+            let (dx, dy) = (px - ex, py - ey);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-4 {
+                return (dx / len, dy / len);
+            }
+        }
+        self.flow
+            .steer_from(ex, ey)
+            .or_else(|| self.flow.next_step_dir(ex, ey))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Boids separation push (un-normalized) for enemy `i`: the summed
+    /// repulsion from every other enemy within `separation_radius`, weighted
+    /// linearly by proximity (closer pushes harder). Zero if nothing's near.
+    fn separation(&self, i: usize) -> (f32, f32) {
+        let r = self.tunables.separation_radius;
+        if r <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let e = &self.enemies[i];
+        let r2 = r * r;
+        let (mut sx, mut sy) = (0.0, 0.0);
+        for (j, o) in self.enemies.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let dx = e.x - o.x;
+            let dy = e.y - o.y;
+            let d2 = dx * dx + dy * dy;
+            if d2 > 1e-6 && d2 < r2 {
+                let d = d2.sqrt();
+                let push = (r - d) / r; // 1 at touching → 0 at the radius
+                sx += dx / d * push;
+                sy += dy / d * push;
+            }
+        }
+        (sx, sy)
+    }
+
+    /// Whether the straight segment `(x0,y0)→(x1,y1)` stays on `Floor` tiles —
+    /// a cheap point-sampled line-of-sight test, sampled every quarter tile.
+    fn line_clear(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let steps = (dist / 0.25).ceil() as i32;
+        for s in 1..=steps {
+            let t = s as f32 / steps as f32;
+            if !floor_at(&self.map, x0 + dx * t, y0 + dy * t) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Drain life from the player for each enemy in contact range this tick.
@@ -1035,6 +1116,94 @@ mod tests {
         let e = &w.enemies[0];
         let now = w.flow.distance_at(e.x as u32, e.y as u32);
         assert!(now < start, "enemy should be closer to the player (flow {now} < {start})");
+    }
+
+    /// An all-floor `w×h` room with the spawn at the center — open space for
+    /// movement/steering tests (no walls to route around).
+    fn open_room(w: u32, h: u32) -> Map {
+        Map {
+            width: w,
+            height: h,
+            tiles: vec![Tile::Floor; (w * h) as usize],
+            rooms: vec![],
+            seed: 0,
+            player_spawn: (w / 2, h / 2),
+        }
+    }
+
+    #[test]
+    fn stacked_enemies_separate() {
+        let mut w = World::new(open_room(21, 21));
+        // Two enemies almost on top of each other, offset along y, both left of
+        // the player (so their seek directions are nearly identical and
+        // separation is what spreads them).
+        let (bx, by) = (w.player.x - 4.0, w.player.y);
+        for (k, dy) in [0.05_f32, -0.05].into_iter().enumerate() {
+            w.enemies.push(EnemyInstance {
+                id: k as u64,
+                x: bx,
+                y: by + dy,
+                archetype: 0,
+                combatant: Combatant::dummy(100.0),
+                speed: 3.0,
+            });
+        }
+        let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
+        for _ in 0..10 {
+            w.tick(0.05, &Content::empty());
+        }
+        let gap1 = (w.enemies[0].y - w.enemies[1].y).abs();
+        assert!(gap1 > gap0, "separation should spread stacked enemies ({gap0} -> {gap1})");
+    }
+
+    #[test]
+    fn separation_off_lets_them_overlap() {
+        let mut w = World::new(open_room(21, 21));
+        w.tunables.separation_weight = 0.0;
+        let (bx, by) = (w.player.x - 4.0, w.player.y);
+        for (k, dy) in [0.05_f32, -0.05].into_iter().enumerate() {
+            w.enemies.push(EnemyInstance {
+                id: k as u64,
+                x: bx,
+                y: by + dy,
+                archetype: 0,
+                combatant: Combatant::dummy(100.0),
+                speed: 3.0,
+            });
+        }
+        let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
+        for _ in 0..10 {
+            w.tick(0.05, &Content::empty());
+        }
+        let gap1 = (w.enemies[0].y - w.enemies[1].y).abs();
+        // Both beeline at the same player with no push apart — gap shouldn't grow.
+        assert!(gap1 <= gap0 + 1e-3, "no separation → no spreading ({gap0} -> {gap1})");
+    }
+
+    #[test]
+    fn open_space_enemy_beelines_at_player() {
+        // In open space (clear line of sight) a diagonal approach should head
+        // straight at the player, not down a cardinal lane — the displacement
+        // stays parallel to the enemy→player vector.
+        let mut w = World::new(open_room(21, 21));
+        let (sx, sy) = (w.player.x - 3.0, w.player.y - 3.0);
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: sx,
+            y: sy,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 3.0,
+        });
+        w.tick(0.05, &Content::empty());
+        let e = &w.enemies[0];
+        let moved = (e.x - sx, e.y - sy);
+        // A straight beeline from a 45° offset moves x and y about equally.
+        assert!(moved.0 > 1e-3 && moved.1 > 1e-3, "should move on both axes");
+        assert!(
+            (moved.0 - moved.1).abs() < 0.2 * moved.0.max(moved.1),
+            "diagonal beeline should move x≈y, got {moved:?}"
+        );
     }
 
     // ---- enemies: hit detection + kills ----
