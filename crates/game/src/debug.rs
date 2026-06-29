@@ -99,7 +99,14 @@ impl DebugUi {
         // an absolute value via the zoom factor, so it stays correct even if
         // egui-miniquad later sets the native scale on a monitor change.
         let dpi = screen_dpi_scale();
-        egui_macroquad::cfg(|ctx| ctx.set_pixels_per_point(dpi));
+        egui_macroquad::cfg(|ctx| {
+            ctx.set_pixels_per_point(dpi);
+            // Forgive cursor jitter between press and release: egui otherwise
+            // reclassifies a click that drifts more than `max_click_dist` (6pt
+            // default) as a *drag* and drops it — the main cause of "missed"
+            // clicks on a trackpad / high-DPI display. Widen the tolerance.
+            ctx.options_mut(|o| o.input_options.max_click_dist = 14.0);
+        });
 
         let mut wants_pointer = false;
         egui_macroquad::ui(|ctx| {
