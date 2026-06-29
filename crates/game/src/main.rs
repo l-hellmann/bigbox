@@ -170,6 +170,74 @@ fn new_world(level: Level, seed: u64) -> World {
     world
 }
 
+/// One frame of gamepad intent, resolved from the active pad (all-`None` when
+/// none is connected, or on wasm). Twin-stick mapping: left stick = move,
+/// right stick = aim, right trigger = fire.
+#[derive(Default, Clone, Copy)]
+struct PadInput {
+    /// Left-stick move vector in tile space (analog magnitude preserved),
+    /// `None` inside the deadzone.
+    move_dir: Option<(f32, f32)>,
+    /// Right-stick aim direction (normalized), `None` inside the deadzone.
+    aim_dir: Option<(f32, f32)>,
+    /// Right trigger held.
+    fire: bool,
+}
+
+/// Gamepad polling via `gilrs` — works native and on wasm (browser Gamepad API).
+mod pad {
+    use super::PadInput;
+    use gilrs::{Axis, Button, Gilrs};
+
+    /// Stick deadzone — magnitude below this reads as neutral.
+    const DEADZONE: f32 = 0.2;
+
+    pub struct Pads(Option<Gilrs>);
+
+    impl Pads {
+        pub fn new() -> Self {
+            Pads(Gilrs::new().ok())
+        }
+
+        /// Poll the first connected gamepad for this frame's intent.
+        pub fn read(&mut self) -> PadInput {
+            let Some(gilrs) = self.0.as_mut() else {
+                return PadInput::default();
+            };
+            // Draining events refreshes the cached pad state as a side effect.
+            while gilrs.next_event().is_some() {}
+            let Some((_id, gp)) = gilrs.gamepads().next() else {
+                return PadInput::default();
+            };
+
+            // Stick Y is +up; our world dy has up = −dy (matching `W → −dy`),
+            // so flip Y for both vectors.
+            let deadzoned = |x: f32, y: f32| -> Option<(f32, f32)> {
+                if (x * x + y * y).sqrt() < DEADZONE {
+                    None
+                } else {
+                    Some((x, -y))
+                }
+            };
+
+            let move_dir = deadzoned(gp.value(Axis::LeftStickX), gp.value(Axis::LeftStickY));
+            let aim_dir = deadzoned(gp.value(Axis::RightStickX), gp.value(Axis::RightStickY)).map(
+                |(x, y)| {
+                    let len = (x * x + y * y).sqrt();
+                    (x / len, y / len)
+                },
+            );
+            let fire = gp.is_pressed(Button::RightTrigger2);
+
+            PadInput {
+                move_dir,
+                aim_dir,
+                fire,
+            }
+        }
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let (level, seed) = resolve_run();
@@ -178,6 +246,8 @@ async fn main() {
 
     #[cfg(feature = "debug")]
     let mut dbg = debug::DebugUi::new();
+
+    let mut pads = pad::Pads::new();
 
     loop {
         let dt = get_frame_time();
@@ -193,8 +263,24 @@ async fn main() {
         // Build the follow-cam first: aim raycasting needs it to unproject
         // the cursor onto the ground plane.
         let camera = build_camera(&world.player);
-        let aim_hit = ground_hit(&camera);
-        let aim = aim_direction(&world.player, aim_hit);
+        let pad = pads.read();
+
+        // Aim: the gamepad right stick takes priority; otherwise the mouse
+        // cursor's ground-plane hit.
+        let mouse_hit = ground_hit(&camera);
+        let aim = pad
+            .aim_dir
+            .or_else(|| aim_direction(&world.player, mouse_hit));
+        // Aim marker (3D crosshair): a point ahead of the player when aiming on
+        // the stick, else the mouse hit.
+        let aim_hit = match pad.aim_dir {
+            Some((ax, ay)) => Some(vec3(
+                world.player.x + ax * 6.0,
+                0.0,
+                world.player.y + ay * 6.0,
+            )),
+            None => mouse_hit,
+        };
 
         // Debug overlay runs before input so its spawns/tunable edits apply to
         // this frame's tick, and so it can swallow clicks that land on the
@@ -207,7 +293,7 @@ async fn main() {
         #[cfg(not(feature = "debug"))]
         let block_fire = false;
 
-        for cmd in collect_input(aim) {
+        for cmd in collect_input(aim, &pad) {
             if block_fire && matches!(cmd, Command::Fire { .. }) {
                 continue;
             }
@@ -304,10 +390,28 @@ fn aim_direction(p: &Player, hit: Option<Vec3>) -> Option<(f32, f32)> {
     }
 }
 
-fn collect_input(aim: Option<(f32, f32)>) -> Vec<Command> {
+fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
     let mut cmds = Vec::new();
 
-    // Movement. dy is along world Z, so W (−dy) moves "up"/north on screen.
+    // Movement: the gamepad left stick (analog) takes priority; else WASD/arrows.
+    if let Some((dx, dy)) = pad.move_dir.or_else(keyboard_move) {
+        cmds.push(Command::Move { dx, dy });
+    }
+
+    // Fire — continuous while the right trigger, LMB, or space is held. World
+    // enforces the cooldown.
+    let fire_held =
+        pad.fire || is_mouse_button_down(MouseButton::Left) || is_key_down(KeyCode::Space);
+    if fire_held && let Some((adx, ady)) = aim {
+        cmds.push(Command::Fire { dx: adx, dy: ady });
+    }
+
+    cmds
+}
+
+/// Normalized WASD/arrow movement direction, or `None` if no key is held. `dy`
+/// is along world Z, so W (−dy) moves "up"/north on screen.
+fn keyboard_move() -> Option<(f32, f32)> {
     let mut dx = 0.0_f32;
     let mut dy = 0.0_f32;
     if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
@@ -324,19 +428,10 @@ fn collect_input(aim: Option<(f32, f32)>) -> Vec<Command> {
     }
     if dx != 0.0 || dy != 0.0 {
         let len = (dx * dx + dy * dy).sqrt();
-        cmds.push(Command::Move {
-            dx: dx / len,
-            dy: dy / len,
-        });
+        Some((dx / len, dy / len))
+    } else {
+        None
     }
-
-    // Fire — continuous while LMB or space held. World enforces cooldown.
-    let fire_held = is_mouse_button_down(MouseButton::Left) || is_key_down(KeyCode::Space);
-    if fire_held && let Some((adx, ady)) = aim {
-        cmds.push(Command::Fire { dx: adx, dy: ady });
-    }
-
-    cmds
 }
 
 /// Draw the full 3D scene: ground plane, extruded wall cubes (distance
@@ -708,7 +803,7 @@ fn draw_hud(world: &World) {
 
     // Controls hint, bottom.
     draw_text(
-        "WASD move  |  LMB / Space shoot  |  ESC quit",
+        "WASD / L-stick move  |  mouse / R-stick aim  |  LMB / Space / RT shoot  |  ESC quit",
         12.0,
         screen_height() - 16.0,
         18.0,
