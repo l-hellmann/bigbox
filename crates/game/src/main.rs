@@ -471,19 +471,35 @@ fn world_to_screen(view_proj: &Mat4, p: Vec3) -> Option<(f32, f32)> {
     Some((sx, sy))
 }
 
-/// Draw a centered, stacked block of text lines anchored so the block sits
-/// *above* `(sx, sy)` (the entity's head). Small backing shadow per line for
-/// legibility over the bright cubes.
+/// Draw a centered, stacked block of text lines on a dark translucent box,
+/// anchored so the block sits *above* `(sx, sy)` (the entity's head).
 #[cfg(feature = "debug")]
 fn draw_label(lines: &[String], sx: f32, sy: f32, color: Color) {
     const SIZE: f32 = 14.0;
     const LINE_H: f32 = 15.0;
-    let mut y = sy - LINE_H * lines.len() as f32;
+    const PAD: f32 = 4.0;
+
+    let max_w = lines
+        .iter()
+        .map(|l| measure_text(l, None, SIZE as u16, 1.0).width)
+        .fold(0.0_f32, f32::max);
+    let block_h = LINE_H * lines.len() as f32;
+    let box_top = sy - block_h - PAD * 2.0;
+
+    // Dark translucent backing box.
+    draw_rectangle(
+        sx - max_w * 0.5 - PAD,
+        box_top,
+        max_w + PAD * 2.0,
+        block_h + PAD * 2.0,
+        Color::new(0.02, 0.02, 0.05, 0.6),
+    );
+
+    // Lines, baseline-stacked from the top of the box.
+    let mut y = box_top + PAD + SIZE * 0.8;
     for line in lines {
-        let d = measure_text(line, None, SIZE as u16, 1.0);
-        let x = sx - d.width * 0.5;
-        draw_text(line, x + 1.0, y + 1.0, SIZE, Color::new(0.0, 0.0, 0.0, 0.8));
-        draw_text(line, x, y, SIZE, color);
+        let w = measure_text(line, None, SIZE as u16, 1.0).width;
+        draw_text(line, sx - w * 0.5, y, SIZE, color);
         y += LINE_H;
     }
 }
@@ -495,15 +511,23 @@ fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
     use h2b_procgen::UNREACHABLE;
     use macroquad::camera::Camera;
 
+    /// Only label this many enemies — the nearest ones — to keep it readable.
+    const MAX_LABELS: usize = 5;
+
     let view_proj = camera.matrix();
     let (px, py) = (world.player.x, world.player.y);
-    let r2 = RENDER_RADIUS * RENDER_RADIUS;
 
-    for e in &world.enemies {
-        let d2 = (e.x - px).powi(2) + (e.y - py).powi(2);
-        if d2 > r2 {
-            continue;
-        }
+    // Rank enemies by distance and label only the closest few.
+    let mut ranked: Vec<(f32, usize)> = world
+        .enemies
+        .iter()
+        .enumerate()
+        .map(|(i, e)| ((e.x - px).powi(2) + (e.y - py).powi(2), i))
+        .collect();
+    ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    for &(d2, i) in ranked.iter().take(MAX_LABELS) {
+        let e = &world.enemies[i];
         let id = content
             .enemies
             .get(e.archetype)
