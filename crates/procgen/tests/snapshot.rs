@@ -25,7 +25,6 @@ fn bsp_seed_7_small_map() {
         min_room_size: 4,
         max_room_size: 8,
         max_depth: 4,
-        ..Default::default()
     });
     insta::assert_snapshot!(map.render_ascii());
 }

@@ -722,7 +722,7 @@ mod tests {
         let w = 3;
         let h = 3;
         let mut tiles = vec![Tile::Wall; (w * h) as usize];
-        tiles[(1 * w + 1) as usize] = Tile::Floor;
+        tiles[(w + 1) as usize] = Tile::Floor;
         Map {
             width: w,
             height: h,
@@ -909,7 +909,7 @@ mod tests {
         let h = 3;
         let mut tiles = vec![Tile::Wall; (w * h) as usize];
         for x in 1..=3u32 {
-            tiles[(1 * w + x) as usize] = Tile::Floor;
+            tiles[(w + x) as usize] = Tile::Floor;
         }
         let map = Map {
             width: w,
@@ -945,7 +945,7 @@ mod tests {
         w.tick(0.30, &Content::empty());
         w.apply(Command::Fire { dx: -1.0, dy: 0.0 }, 0.016);
         // Three distinct shots in flight (assuming none have hit walls yet).
-        assert!(w.projectiles.len() >= 1);
+        assert!(!w.projectiles.is_empty());
     }
 
     // ---- enemies: spawning ----
@@ -1133,12 +1133,14 @@ mod tests {
     #[cfg(feature = "debug")]
     #[test]
     fn tunables_ron_round_trips() {
-        let mut t = Tunables::default();
-        t.bullet_damage = 73.5;
-        t.enemy_speed_mult = 2.25;
-        t.god_mode = true;
-        t.auto_spawn = false;
-        t.max_enemies = 123;
+        let t = Tunables {
+            bullet_damage: 73.5,
+            enemy_speed_mult: 2.25,
+            god_mode: true,
+            auto_spawn: false,
+            max_enemies: 123,
+            ..Tunables::default()
+        };
         let ron = ron::ser::to_string(&t).unwrap();
         let back: Tunables = ron::from_str(&ron).unwrap();
         assert_eq!(back.bullet_damage, t.bullet_damage);

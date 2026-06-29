@@ -133,7 +133,7 @@ mod tests {
         let mut tiles = vec![Tile::Wall; (w * h) as usize];
         // Floor along the middle row, cols 1..=3
         for x in 1..=3u32 {
-            tiles[(1 * w + x) as usize] = Tile::Floor;
+            tiles[(w + x) as usize] = Tile::Floor;
         }
         Map {
             width: w,
@@ -153,8 +153,8 @@ mod tests {
         let w = 7;
         let h = 3;
         let mut tiles = vec![Tile::Wall; (w * h) as usize];
-        tiles[(1 * w + 1) as usize] = Tile::Floor;
-        tiles[(1 * w + 5) as usize] = Tile::Floor;
+        tiles[(w + 1) as usize] = Tile::Floor;
+        tiles[(w + 5) as usize] = Tile::Floor;
         Map {
             width: w,
             height: h,

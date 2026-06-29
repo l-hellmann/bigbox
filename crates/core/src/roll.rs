@@ -107,6 +107,11 @@ fn is_tier_eligible(t: &AffixTier, ilvl: u32, tier_floor: u8) -> bool {
     t.ilvl_required <= ilvl && t.tier <= tier_floor
 }
 
+// The roll pipeline genuinely needs all of these: the RNG, the read-only
+// content (affixes + base), the ilvl/tier-floor gate, the slot, the count, and
+// the mutable taken-groups set for exclusion. Bundling them into a context
+// struct would only move the parameter list one level out for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 fn roll_affix_set<R: Rng + ?Sized>(
     rng: &mut R,
     affixes: &[Affix],

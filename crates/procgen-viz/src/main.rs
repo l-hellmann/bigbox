@@ -123,7 +123,7 @@ fn render<W: Write>(
                         if d == UNREACHABLE {
                             paint(out, '?', Color::Wall, args.color)?;
                         } else {
-                            let ch = char::from_digit((d % 10) as u32, 10).unwrap_or('.');
+                            let ch = char::from_digit(d % 10, 10).unwrap_or('.');
                             paint(out, ch, Color::Floor, args.color)?;
                         }
                     } else {
