@@ -555,8 +555,9 @@ fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
         } else {
             flow_d.to_string()
         };
+        let state = if e.awake { "" } else { "  [idle]" };
         let lines = [
-            format!("{id} #{}  il{ilvl}", e.id),
+            format!("{id} #{}  il{ilvl}{state}", e.id),
             format!("hp {:.0}/{:.0}", c.current_life, c.max_life),
             format!("arm {:.0}  eva {:.0}", c.armor, c.evasion),
             format!("spd {:.1}  d {:.1}  flow {flow_s}", e.speed, d2.sqrt()),

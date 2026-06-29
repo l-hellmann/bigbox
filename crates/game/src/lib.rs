@@ -108,6 +108,10 @@ pub struct Tunables {
     /// lever for tuning swarm convergence / pathing pressure without touching
     /// the flow field — `1.0` is shipping behaviour.
     pub enemy_speed_mult: f32,
+    /// Distance (tiles) at which a dormant enemy with clear line of sight spots
+    /// the player and wakes (then gives chase permanently). Independent of
+    /// `los_range` — sight gates *aggro*, los_range gates the *approach style*.
+    pub sight_range: f32,
     /// Max distance (tiles) at which an enemy with clear line of sight beelines
     /// straight at the player (radial approach). Beyond it — or when a wall
     /// blocks the line — it paths via the flow field instead. `0` disables the
@@ -142,6 +146,7 @@ impl Default for Tunables {
             spawn_min_distance: SPAWN_MIN_DISTANCE,
             drop_chance: DROP_CHANCE,
             enemy_speed_mult: 1.0,
+            sight_range: 12.0,
             los_range: 20.0,
             separation_weight: 1.5,
             separation_radius: 1.0,
@@ -190,6 +195,11 @@ pub struct EnemyInstance {
     pub combatant: Combatant,
     /// Movement speed in tiles per second (per-archetype, see [`archetype_speed`]).
     pub speed: f32,
+    /// Aggro latch. Spawns `false` (inert — holds position); flips `true` once
+    /// the enemy spots the player (within `sight_range` + clear line of sight)
+    /// or takes a hit, and stays `true` thereafter (it gives chase via the
+    /// flow field even after losing sight).
+    pub awake: bool,
 }
 
 /// An item lying on the ground waiting to be walked over.
@@ -442,6 +452,8 @@ impl World {
                     &weapon,
                     &mut self.enemies[ei].combatant,
                 ));
+                // Getting shot wakes a dormant enemy.
+                self.enemies[ei].awake = true;
                 self.projectiles.swap_remove(i);
                 if self.enemies[ei].combatant.current_life <= 0.0 {
                     self.kill_enemy(ei, content);
@@ -523,8 +535,29 @@ impl World {
         let sep_weight = self.tunables.separation_weight;
 
         let n = self.enemies.len();
+
+        // Awareness pass: a dormant enemy that spots the player (within sight
+        // range + clear line) wakes for good. Mutates `awake`, so it's a
+        // separate loop ahead of the immutable direction pass.
+        let sight = self.tunables.sight_range;
+        for i in 0..n {
+            if self.enemies[i].awake {
+                continue;
+            }
+            let (ex, ey) = (self.enemies[i].x, self.enemies[i].y);
+            let (dx, dy) = (px - ex, py - ey);
+            if dx * dx + dy * dy <= sight * sight && self.line_clear(ex, ey, px, py) {
+                self.enemies[i].awake = true;
+            }
+        }
+
         let mut dirs: Vec<(f32, f32)> = Vec::with_capacity(n);
         for i in 0..n {
+            // Inert enemies hold position until they wake.
+            if !self.enemies[i].awake {
+                dirs.push((0.0, 0.0));
+                continue;
+            }
             let (ex, ey) = (self.enemies[i].x, self.enemies[i].y);
             let (skx, sky) = self.seek_dir(ex, ey, px, py);
             let (spx, spy) = self.separation(i);
@@ -701,6 +734,7 @@ impl World {
             archetype,
             combatant: arch.as_combatant(),
             speed: archetype_speed(&arch.id),
+            awake: false,
         });
     }
 
@@ -761,6 +795,14 @@ impl World {
     /// Remove every uncollected ground drop.
     pub fn debug_clear_drops(&mut self) {
         self.drops.clear();
+    }
+
+    /// Wake every live enemy (aggro them all) — handy for testing chase
+    /// behaviour without first walking into each one's sight line.
+    pub fn debug_wake_all(&mut self) {
+        for e in &mut self.enemies {
+            e.awake = true;
+        }
     }
 
     /// Restore the player to full life and lift `game_over` — revive without a
@@ -1115,6 +1157,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(100.0),
             speed: 4.0,
+            awake: true,
         });
         let start = w.flow.distance_at(far_tile.0, far_tile.1);
         // Several ticks of pure pathing (no content needed for movement).
@@ -1154,6 +1197,7 @@ mod tests {
                 archetype: 0,
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
+                awake: false,
             });
         }
         let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
@@ -1177,6 +1221,7 @@ mod tests {
                 archetype: 0,
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
+                awake: false,
             });
         }
         let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
@@ -1202,6 +1247,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(100.0),
             speed: 3.0,
+            awake: false,
         });
         w.tick(0.05, &Content::empty());
         let e = &w.enemies[0];
@@ -1232,6 +1278,7 @@ mod tests {
                 archetype: 0,
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
+                awake: false,
             });
             w.tick(0.05, &Content::empty());
             let e = &w.enemies[0];
@@ -1243,6 +1290,71 @@ mod tests {
             flow > beeline + 0.1,
             "flow approach should be more diagonal than the beeline ({beeline} vs {flow})"
         );
+    }
+
+    #[test]
+    fn enemy_stays_inert_out_of_sight() {
+        // Enemy spawns dormant and the player is beyond sight range — it must
+        // not move.
+        let mut w = World::new(open_room(41, 41));
+        w.tunables.sight_range = 5.0;
+        let (sx, sy) = (w.player.x - 12.0, w.player.y); // 12 > 5: never spotted
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: sx,
+            y: sy,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 3.0,
+            awake: false,
+        });
+        for _ in 0..20 {
+            w.tick(0.05, &Content::empty());
+        }
+        assert!(!w.enemies[0].awake, "should stay dormant out of sight");
+        assert!(
+            (w.enemies[0].x - sx).abs() < 1e-4 && (w.enemies[0].y - sy).abs() < 1e-4,
+            "inert enemy should not have moved"
+        );
+    }
+
+    #[test]
+    fn enemy_wakes_and_chases_when_spotted() {
+        let mut w = World::new(open_room(41, 41));
+        w.tunables.sight_range = 20.0;
+        let (sx, sy) = (w.player.x - 8.0, w.player.y); // 8 < 20, clear line
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: sx,
+            y: sy,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 3.0,
+            awake: false,
+        });
+        w.tick(0.1, &Content::empty());
+        assert!(w.enemies[0].awake, "in-sight player should wake the enemy");
+        assert!(w.enemies[0].x > sx, "woken enemy should advance on the player");
+    }
+
+    #[test]
+    fn projectile_hit_wakes_a_dormant_enemy() {
+        // Sight disabled, so only the shot can wake it.
+        let mut w = World::new(single_floor_map());
+        w.tunables.sight_range = 0.0;
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x + 0.3,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(1000.0),
+            speed: 0.0,
+            awake: false,
+        });
+        assert!(!w.enemies[0].awake);
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        w.tick(0.02, &Content::empty());
+        assert!(w.enemies[0].awake, "getting shot should wake the enemy");
     }
 
     // ---- enemies: hit detection + kills ----
@@ -1258,6 +1370,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(1000.0),
             speed: 0.0,
+            awake: false,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &Content::empty());
@@ -1280,6 +1393,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(1.0), // dies to one shot
             speed: 0.0,
+            awake: false,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &content);
@@ -1335,6 +1449,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(100.0),
             speed: 0.0,
+            awake: false,
         });
         w.tick(1.0, &Content::empty()); // CONTACT_DPS × 1s = 8 dmg > 1 life
         assert!(w.player.current_life <= 0.0);
@@ -1391,6 +1506,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(100.0),
             speed: 0.0,
+            awake: false,
         });
         w.tick(1.0, &Content::empty());
         assert_eq!(w.player.current_life, 5.0, "god mode should negate contact damage");
@@ -1420,6 +1536,7 @@ mod tests {
             archetype: 0,
             combatant: Combatant::dummy(1000.0),
             speed: 0.0,
+            awake: false,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &Content::empty());
