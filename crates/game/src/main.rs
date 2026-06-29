@@ -20,6 +20,9 @@ use h2b_game::{Command, Content, EnemyInstance, LootDrop, Player, Projectile, Wo
 use h2b_procgen::{MapParams, Tile, generate_bsp};
 use macroquad::prelude::*;
 
+#[cfg(feature = "debug")]
+mod debug;
+
 /// How tall wall cubes stand, in world units (= tiles). Tall enough to read
 /// depth and occlude, short enough not to hide the play area from the
 /// angled cam.
@@ -84,6 +87,9 @@ async fn main() {
     let content = load_content();
     let mut world = new_world(seed);
 
+    #[cfg(feature = "debug")]
+    let mut dbg = debug::DebugUi::new();
+
     loop {
         let dt = get_frame_time();
 
@@ -101,7 +107,21 @@ async fn main() {
         let aim_hit = ground_hit(&camera);
         let aim = aim_direction(&world.player, aim_hit);
 
+        // Debug overlay runs before input so its spawns/tunable edits apply to
+        // this frame's tick, and so it can swallow clicks that land on the
+        // panel (`block_fire`).
+        #[cfg(feature = "debug")]
+        let block_fire = {
+            dbg.handle_toggle();
+            dbg.run(&mut world, &content, aim_hit.map(|h| (h.x, h.z)))
+        };
+        #[cfg(not(feature = "debug"))]
+        let block_fire = false;
+
         for cmd in collect_input(aim) {
+            if block_fire && matches!(cmd, Command::Fire { .. }) {
+                continue;
+            }
             world.apply(cmd, dt);
         }
         world.tick(dt, &content);
@@ -114,6 +134,10 @@ async fn main() {
         // ---- 2D overlay pass ----
         set_default_camera();
         draw_hud(&world);
+
+        // ---- debug overlay (on top of everything) ----
+        #[cfg(feature = "debug")]
+        dbg.draw();
 
         next_frame().await;
     }

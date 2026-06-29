@@ -84,7 +84,8 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
                      mouse-aimed shooting (ground-plane raycast aim), wave-spawned
                      enemies (FlowField pathing), projectile hit detection via
                      core::resolve_hit, loot drops + walk-over pickup, contact damage,
-                     death/restart. Angled BoxHead follow-cam.
+                     death/restart. Angled BoxHead follow-cam. Live-tuning egui
+                     debug overlay behind `--features debug` (runtime Tunables).
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
 /web              ⏳ wasm bundling, index.html, JS shim
 ```
@@ -205,6 +206,40 @@ Two modes:
 - **`--summary`**: distribution tables in one screen — rarity counts, per-base avg_dps / avg_ttk / kit_dps / kit_ttk (with optimal attachments slotted), per-rarity TTK breakdown, per-enemy TTK matrix, kills-to-reach-each-level table, and per-affix tier histograms with avg_roll vs theoretical range.
 
 Eyeballing the summary answers: are T1 affixes appearing at the right rate? Does the average Rare feel meaningfully better than a Common? Is each weapon archetype best against something? How grindy is each enemy? Snapshot tests lock the output for `seed=42, ilvl=20` and `seed=42, ilvl=60` so accidental regressions in roll / aggregate / combat math fail fast.
+
+---
+
+## The in-game debug overlay (feel-tuning, the sim's realtime counterpart)
+
+Where the sim tunes *numbers offline*, the debug overlay tunes *feel live* — the
+egui panel for the questions you can only answer by playing: does enemy speed ×
+feel oppressive, is the fire rate satisfying, how dense should waves be.
+
+```
+cargo run -p head2box-game --features debug
+```
+
+Feature-gated (`debug` → optional `egui-macroquad`), so a normal
+`cargo build`/`--release` compiles none of it. **F1** toggles the panel.
+
+Mechanism — the load-bearing refactor: every gameplay knob that used to be a
+`const` now lives in `h2b_game::Tunables` on `World`, and the simulation reads
+**only** from there. The `const`s remain the default source (`Tunables::default`
+snapshots them), so behaviour and tests are unchanged until something mutates a
+field. The panel binds sliders straight to `world.tunables` (damage, fire rate,
+projectile speed, contact dps, player/enemy speed, spawn cadence + caps, drop
+chance), plus god mode and an auto-spawn toggle. Manual spawning, clear/revive,
+and a per-shot hit readout (damage dealt / crit / dodge, surfaced from the
+otherwise-discarded `resolve_hit` result) go through `World::debug_*` methods.
+Export/import round-trips the whole `Tunables` block to `head2box-tunables.ron`
+(pretty RON, hand-editable) in the working dir — dial in a feel, export it, and
+the file is a reusable preset (serde derives are debug-gated, so non-debug
+builds stay serde-free).
+
+Those `Tunables` / `debug_*` surfaces live on the headless `World` (not behind
+the feature) — only the egui *editor* is gated. Keeps the lib identical for
+tests and the eventual SpacetimeDB reuse; difficulty presets later are just
+another `Tunables` producer.
 
 ---
 

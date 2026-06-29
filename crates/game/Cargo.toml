@@ -19,3 +19,14 @@ head2box-content = { path = "../content" }
 head2box-procgen = { path = "../procgen" }
 rand = { workspace = true }
 macroquad = { workspace = true }
+# Debug-only immediate-mode tuning panel + RON tunable export/import. All
+# optional so release builds don't compile (or ship) any of it. Enable with
+# `--features debug`.
+egui-macroquad = { version = "0.17", optional = true }
+serde = { workspace = true, optional = true }
+ron = { workspace = true, optional = true }
+
+[features]
+# Compiles the in-game debug/tuning overlay (egui) and tunable export/import.
+# Off by default → stripped from a normal `cargo build --release`.
+debug = ["dep:egui-macroquad", "dep:serde", "dep:ron"]

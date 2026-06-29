@@ -22,7 +22,9 @@
 //! no persistent id — they're ephemeral, client-replayed from their spawn.
 
 use h2b_core::roll::roll_item;
-use h2b_core::{Affix, BaseItem, Combatant, Enemy, ItemInstance, Rarity, Weapon, resolve_hit};
+use h2b_core::{
+    Affix, BaseItem, Combatant, Enemy, HitResult, ItemInstance, Rarity, Weapon, resolve_hit,
+};
 use h2b_procgen::{FlowField, Map, Tile, pick_spawn_points};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -70,6 +72,63 @@ pub const MAX_ENEMIES: usize = 40;
 pub const SPAWN_MIN_DISTANCE: u32 = 12;
 /// Probability a kill drops an item at all. Rarity is rolled separately.
 pub const DROP_CHANCE: f32 = 0.35;
+
+/// Live, runtime-mutable copy of the gameplay knobs above. The simulation
+/// reads **every** tunable value from here rather than the `const`s directly,
+/// so a debug overlay (or, later, a difficulty preset) can retune the feel
+/// without a recompile. The `const`s remain the single source of the *default*
+/// values — [`Tunables::default`] just snapshots them — so behaviour and the
+/// unit tests are unchanged until something deliberately mutates a field.
+///
+/// Plain `Copy` data: it's part of the serializable world state, not behind
+/// any rendering or debug feature. Stripping the debug UI strips the *editor*,
+/// not this struct. The serde derives are themselves debug-only (RON
+/// export/import lives in the overlay) so non-debug builds pull in no serde.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "debug", derive(serde::Serialize, serde::Deserialize))]
+pub struct Tunables {
+    pub player_speed: f32,
+    pub projectile_speed: f32,
+    pub fire_rate: f32,
+    pub bullet_damage: f32,
+    pub bullet_lifetime: f32,
+    pub contact_dps: f32,
+    pub spawn_interval: f32,
+    pub spawn_batch: usize,
+    pub max_enemies: usize,
+    pub spawn_min_distance: u32,
+    pub drop_chance: f32,
+    /// Global multiplier on every enemy's per-archetype move speed. The cheap
+    /// lever for tuning swarm convergence / pathing pressure without touching
+    /// the flow field — `1.0` is shipping behaviour.
+    pub enemy_speed_mult: f32,
+    /// When false, the wave timer is suspended — useful for hand-spawning a
+    /// controlled set of enemies to study one interaction at a time.
+    pub auto_spawn: bool,
+    /// When true, the player takes no contact damage (and can't die).
+    pub god_mode: bool,
+}
+
+impl Default for Tunables {
+    fn default() -> Self {
+        Self {
+            player_speed: PLAYER_SPEED,
+            projectile_speed: PROJECTILE_SPEED,
+            fire_rate: FIRE_RATE,
+            bullet_damage: BULLET_DAMAGE,
+            bullet_lifetime: BULLET_LIFETIME,
+            contact_dps: CONTACT_DPS,
+            spawn_interval: SPAWN_INTERVAL,
+            spawn_batch: SPAWN_BATCH,
+            max_enemies: MAX_ENEMIES,
+            spawn_min_distance: SPAWN_MIN_DISTANCE,
+            drop_chance: DROP_CHANCE,
+            enemy_speed_mult: 1.0,
+            auto_spawn: true,
+            god_mode: false,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Player {
@@ -155,6 +214,14 @@ pub struct World {
     /// runtime layer decides whether to restart.
     pub game_over: bool,
 
+    /// Runtime gameplay knobs. Mutated by the debug overlay; otherwise holds
+    /// [`Tunables::default`] (i.e. the shipping `const` values).
+    pub tunables: Tunables,
+    /// Outcome of the most recent projectile→enemy hit (dodge / damage / crit).
+    /// Discarded by gameplay; surfaced by the debug overlay so the effect of
+    /// damage and enemy-armor tuning is visible per shot.
+    pub last_hit: Option<HitResult>,
+
     // --- determinism / event sourcing (not part of the public render view) ---
     world_seed: u64,
     event_seq: u64,
@@ -192,6 +259,8 @@ impl World {
             xp: 0,
             last_pickup: None,
             game_over: false,
+            tunables: Tunables::default(),
+            last_hit: None,
             world_seed,
             event_seq: 0,
             next_entity_id: 0,
@@ -247,7 +316,7 @@ impl World {
         }
         match cmd {
             Command::Move { dx, dy } => {
-                let step = PLAYER_SPEED * dt;
+                let step = self.tunables.player_speed * dt;
                 let nx = self.player.x + dx * step;
                 if self.can_stand(nx, self.player.y) {
                     self.player.x = nx;
@@ -272,12 +341,12 @@ impl World {
                 self.projectiles.push(Projectile {
                     x: self.player.x,
                     y: self.player.y,
-                    vx: nx * PROJECTILE_SPEED,
-                    vy: ny * PROJECTILE_SPEED,
-                    damage: BULLET_DAMAGE,
-                    lifetime: BULLET_LIFETIME,
+                    vx: nx * self.tunables.projectile_speed,
+                    vy: ny * self.tunables.projectile_speed,
+                    damage: self.tunables.bullet_damage,
+                    lifetime: self.tunables.bullet_lifetime,
                 });
-                self.player_fire_cooldown = 1.0 / FIRE_RATE;
+                self.player_fire_cooldown = 1.0 / self.tunables.fire_rate;
             }
         }
     }
@@ -340,7 +409,11 @@ impl World {
                     crit_multiplier: 1.0,
                 };
                 let mut rng = self.next_event_rng();
-                resolve_hit(&mut rng, &weapon, &mut self.enemies[ei].combatant);
+                self.last_hit = Some(resolve_hit(
+                    &mut rng,
+                    &weapon,
+                    &mut self.enemies[ei].combatant,
+                ));
                 self.projectiles.swap_remove(i);
                 if self.enemies[ei].combatant.current_life <= 0.0 {
                     self.kill_enemy(ei, content);
@@ -388,7 +461,7 @@ impl World {
             return;
         }
         let mut rng = self.next_event_rng();
-        if rng.r#gen::<f32>() >= DROP_CHANCE {
+        if rng.r#gen::<f32>() >= self.tunables.drop_chance {
             return;
         }
         let rarity = roll_rarity(&mut rng);
@@ -418,7 +491,7 @@ impl World {
             let dy = target.1 - e.y;
             let len = (dx * dx + dy * dy).sqrt();
             if len > 1e-4 {
-                let step = (e.speed * dt).min(len);
+                let step = (e.speed * self.tunables.enemy_speed_mult * dt).min(len);
                 e.x += dx / len * step;
                 e.y += dy / len * step;
             }
@@ -427,6 +500,9 @@ impl World {
 
     /// Drain life from the player for each enemy in contact range this tick.
     fn apply_contact_damage(&mut self, dt: f32) {
+        if self.tunables.god_mode {
+            return;
+        }
         let (px, py) = (self.player.x, self.player.y);
         let r2 = CONTACT_RANGE * CONTACT_RANGE;
         let touching = self
@@ -439,7 +515,7 @@ impl World {
             })
             .count();
         if touching > 0 {
-            let dmg = CONTACT_DPS * dt * touching as f32;
+            let dmg = self.tunables.contact_dps * dt * touching as f32;
             self.player.current_life = (self.player.current_life - dmg).max(0.0);
         }
     }
@@ -466,36 +542,44 @@ impl World {
     /// never on the player). Archetype is a uniform pick for v1 — weighted
     /// spawn tables come with biomes later.
     fn update_spawning(&mut self, dt: f32, content: &Content) {
-        if content.enemies.is_empty() {
+        if content.enemies.is_empty() || !self.tunables.auto_spawn {
             return;
         }
+        let interval = self.tunables.spawn_interval;
         self.spawn_timer -= dt;
-        if self.spawn_timer > 0.0 || self.enemies.len() >= MAX_ENEMIES {
+        if self.spawn_timer > 0.0 || self.enemies.len() >= self.tunables.max_enemies {
             // Reset the timer even when capped, so we don't dump a burst the
             // instant headroom opens up.
             if self.spawn_timer <= 0.0 {
-                self.spawn_timer = SPAWN_INTERVAL;
+                self.spawn_timer = interval;
             }
             return;
         }
-        self.spawn_timer = SPAWN_INTERVAL;
+        self.spawn_timer = interval;
 
-        let budget = (MAX_ENEMIES - self.enemies.len()).min(SPAWN_BATCH);
+        let budget = (self.tunables.max_enemies - self.enemies.len()).min(self.tunables.spawn_batch);
         let mut rng = self.next_event_rng();
-        let points = pick_spawn_points(&mut rng, &self.flow, budget, SPAWN_MIN_DISTANCE);
+        let points = pick_spawn_points(&mut rng, &self.flow, budget, self.tunables.spawn_min_distance);
         for (tx, ty) in points {
             let idx = rng.gen_range(0..content.enemies.len());
-            let arch = &content.enemies[idx];
-            let id = self.alloc_id();
-            self.enemies.push(EnemyInstance {
-                id,
-                x: tx as f32 + 0.5,
-                y: ty as f32 + 0.5,
-                archetype: idx,
-                combatant: arch.as_combatant(),
-                speed: archetype_speed(&arch.id),
-            });
+            self.push_enemy(idx, tx as f32 + 0.5, ty as f32 + 0.5, content);
         }
+    }
+
+    /// Construct and insert one live enemy of `archetype` (index into
+    /// [`Content::enemies`]) at `(x, y)`, allocating a fresh entity id. Shared
+    /// by wave spawning and the debug spawn helpers.
+    fn push_enemy(&mut self, archetype: usize, x: f32, y: f32, content: &Content) {
+        let arch = &content.enemies[archetype];
+        let id = self.alloc_id();
+        self.enemies.push(EnemyInstance {
+            id,
+            x,
+            y,
+            archetype,
+            combatant: arch.as_combatant(),
+            speed: archetype_speed(&arch.id),
+        });
     }
 
     fn can_stand(&self, x: f32, y: f32) -> bool {
@@ -512,6 +596,61 @@ impl World {
     /// the same passability rules. Split if we ever add window/pit tiles.
     fn is_passable(&self, x: f32, y: f32) -> bool {
         self.can_stand(x, y)
+    }
+}
+
+/// Debug / tuning API. These bypass the wave timer and caps to set up a
+/// controlled scenario — they're driven by the debug overlay, never by normal
+/// gameplay input. Kept on `World` (not behind a feature) so the headless
+/// crate compiles identically; only the *renderer-side* editor is feature-gated.
+impl World {
+    /// Spawn `count` enemies of `archetype` (index into [`Content::enemies`])
+    /// on distance-biased floor tiles at least `min_distance` from the player.
+    /// Clamps `archetype` to the roster; no-op if there's no enemy content.
+    pub fn debug_spawn(
+        &mut self,
+        archetype: usize,
+        count: usize,
+        min_distance: u32,
+        content: &Content,
+    ) {
+        if content.enemies.is_empty() {
+            return;
+        }
+        let archetype = archetype.min(content.enemies.len() - 1);
+        let mut rng = self.next_event_rng();
+        let points = pick_spawn_points(&mut rng, &self.flow, count, min_distance);
+        for (tx, ty) in points {
+            self.push_enemy(archetype, tx as f32 + 0.5, ty as f32 + 0.5, content);
+        }
+    }
+
+    /// Spawn one enemy of `archetype` at an explicit world position (e.g. the
+    /// cursor tile). No-op if the tile isn't standable or there's no content.
+    pub fn debug_spawn_at(&mut self, archetype: usize, x: f32, y: f32, content: &Content) {
+        if content.enemies.is_empty() || !self.can_stand(x, y) {
+            return;
+        }
+        let archetype = archetype.min(content.enemies.len() - 1);
+        self.push_enemy(archetype, x, y, content);
+    }
+
+    /// Remove every live enemy. The wave timer still runs (gate it via
+    /// `tunables.auto_spawn` for a fully static arena).
+    pub fn debug_clear_enemies(&mut self) {
+        self.enemies.clear();
+    }
+
+    /// Remove every uncollected ground drop.
+    pub fn debug_clear_drops(&mut self) {
+        self.drops.clear();
+    }
+
+    /// Restore the player to full life and lift `game_over` — revive without a
+    /// full world reset, so a tuning session survives a death.
+    pub fn debug_revive(&mut self) {
+        self.player.current_life = self.player.max_life;
+        self.game_over = false;
     }
 }
 
@@ -953,6 +1092,115 @@ mod tests {
         let cmds_before = w.kills;
         w.tick(1.0, &Content::empty());
         assert_eq!(w.kills, cmds_before);
+    }
+
+    // ---- debug / tunables ----
+
+    #[test]
+    fn tunables_default_matches_the_constants() {
+        let t = Tunables::default();
+        assert_eq!(t.player_speed, PLAYER_SPEED);
+        assert_eq!(t.bullet_damage, BULLET_DAMAGE);
+        assert_eq!(t.fire_rate, FIRE_RATE);
+        assert_eq!(t.spawn_interval, SPAWN_INTERVAL);
+        assert!(t.auto_spawn);
+        assert!(!t.god_mode);
+        assert_eq!(t.enemy_speed_mult, 1.0);
+    }
+
+    #[cfg(feature = "debug")]
+    #[test]
+    fn tunables_ron_round_trips() {
+        let mut t = Tunables::default();
+        t.bullet_damage = 73.5;
+        t.enemy_speed_mult = 2.25;
+        t.god_mode = true;
+        t.auto_spawn = false;
+        t.max_enemies = 123;
+        let ron = ron::ser::to_string(&t).unwrap();
+        let back: Tunables = ron::from_str(&ron).unwrap();
+        assert_eq!(back.bullet_damage, t.bullet_damage);
+        assert_eq!(back.enemy_speed_mult, t.enemy_speed_mult);
+        assert!(back.god_mode);
+        assert!(!back.auto_spawn);
+        assert_eq!(back.max_enemies, 123);
+    }
+
+    #[test]
+    fn god_mode_blocks_contact_damage() {
+        let mut w = World::new(single_floor_map());
+        w.tunables.god_mode = true;
+        w.player.current_life = 5.0;
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(100.0),
+            speed: 0.0,
+        });
+        w.tick(1.0, &Content::empty());
+        assert_eq!(w.player.current_life, 5.0, "god mode should negate contact damage");
+        assert!(!w.game_over);
+    }
+
+    #[test]
+    fn auto_spawn_off_suspends_waves() {
+        let mut w = world_at_seed(42);
+        w.tunables.auto_spawn = false;
+        let content = Content {
+            enemies: vec![test_enemy("basic_zombie", 100.0)],
+            ..Content::empty()
+        };
+        w.tick(SPAWN_INTERVAL * 3.0, &content);
+        assert!(w.enemies.is_empty(), "no waves while auto_spawn is off");
+    }
+
+    #[test]
+    fn bullet_damage_tunable_drives_hits() {
+        let mut w = World::new(single_floor_map());
+        w.tunables.bullet_damage = 50.0;
+        w.enemies.push(EnemyInstance {
+            id: 1,
+            x: w.player.x + 0.3,
+            y: w.player.y,
+            archetype: 0,
+            combatant: Combatant::dummy(1000.0),
+            speed: 0.0,
+        });
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        w.tick(0.02, &Content::empty());
+        assert!((w.enemies[0].combatant.current_life - 950.0).abs() < 1e-3);
+        assert!(matches!(w.last_hit, Some(HitResult::Hit { .. })));
+    }
+
+    #[test]
+    fn debug_spawn_and_clear() {
+        let mut w = world_at_seed(42);
+        let content = Content {
+            enemies: vec![test_enemy("basic_zombie", 100.0)],
+            ..Content::empty()
+        };
+        w.debug_spawn(0, 5, SPAWN_MIN_DISTANCE, &content);
+        assert!(!w.enemies.is_empty(), "debug spawn should place enemies");
+        // Unique ids, like wave spawns.
+        let mut ids: Vec<u64> = w.enemies.iter().map(|e| e.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), w.enemies.len());
+        w.debug_clear_enemies();
+        assert!(w.enemies.is_empty());
+    }
+
+    #[test]
+    fn debug_revive_restores_life_after_death() {
+        let mut w = World::new(single_floor_map());
+        w.player.current_life = 0.0;
+        w.tick(0.1, &Content::empty());
+        assert!(w.game_over);
+        w.debug_revive();
+        assert!(!w.game_over);
+        assert_eq!(w.player.current_life, w.player.max_life);
     }
 
     // ---- determinism of the event model ----
