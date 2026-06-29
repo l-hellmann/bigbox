@@ -94,7 +94,6 @@ impl DebugUi {
         }
         let mut wants_pointer = false;
         egui_macroquad::ui(|ctx| {
-            wants_pointer = ctx.wants_pointer_input();
             // Pinned to the right edge, full window height. `resizable` lets you
             // widen it; the scroll area handles the tall widget stack.
             egui::SidePanel::right("debug_panel")
@@ -102,10 +101,18 @@ impl DebugUi {
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.heading("debug · tuning  (F1)");
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.contents(ui, world, content, cursor_tile);
-                    });
+                    // `drag_to_scroll(false)`: otherwise a click with any slight
+                    // cursor movement (common on a trackpad) is taken as a
+                    // scroll-drag and the button click is dropped.
+                    egui::ScrollArea::vertical()
+                        .drag_to_scroll(false)
+                        .show(ui, |ui| {
+                            self.contents(ui, world, content, cursor_tile);
+                        });
                 });
+            // Read after the panel is built so it reflects this frame's
+            // interaction (used to suppress firing through the panel).
+            wants_pointer = ctx.wants_pointer_input();
         });
         wants_pointer
     }
