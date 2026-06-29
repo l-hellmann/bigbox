@@ -484,12 +484,10 @@ fn draw_health_bar(e: &EnemyInstance, half: f32) {
     let bar_d = 0.06;
 
     // Dark backing, slightly oversized for a border.
-    draw_cube(
-        vec3(e.x, bar_y, e.y),
-        vec3(bar_w + 0.04, bar_h + 0.03, bar_d),
-        None,
-        Color::new(0.05, 0.05, 0.06, 1.0),
-    );
+    let back_center = vec3(e.x, bar_y, e.y);
+    let back_size = vec3(bar_w + 0.04, bar_h + 0.03, bar_d);
+    draw_cube(back_center, back_size, None, Color::new(0.05, 0.05, 0.06, 1.0));
+    draw_cube_wires(back_center, back_size, Color::new(0.0, 0.0, 0.0, 1.0));
 
     // Life fill, left-aligned, colored by remaining fraction.
     let fill_w = (bar_w * frac).max(0.001);
