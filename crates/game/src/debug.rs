@@ -36,6 +36,9 @@ pub struct DebugUi {
     show_flow: bool,
     /// Draw floating Enemy/Combatant + player stat blocks (read by the renderer).
     show_entity_stats: bool,
+    /// Panel layout: `true` = docked to the right edge, `false` = a free-floating
+    /// movable window. Toggled by the checkbox in the panel header.
+    docked: bool,
     /// Last export/import outcome, shown under the buttons.
     status: String,
 }
@@ -58,6 +61,7 @@ impl DebugUi {
             arena_pillars: true,
             show_flow: false,
             show_entity_stats: false,
+            docked: true,
             status: String::new(),
         }
     }
@@ -109,28 +113,51 @@ impl DebugUi {
         });
 
         let mut wants_pointer = false;
+        let docked = self.docked;
         egui_macroquad::ui(|ctx| {
-            // Pinned to the right edge, full window height. `resizable` lets you
-            // widen it; the scroll area handles the tall widget stack.
-            egui::SidePanel::right("debug_panel")
-                .default_width(300.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("debug · tuning  (F1)");
-                    // `drag_to_scroll(false)`: otherwise a click with any slight
-                    // cursor movement (common on a trackpad) is taken as a
-                    // scroll-drag and the button click is dropped.
-                    egui::ScrollArea::vertical()
-                        .drag_to_scroll(false)
-                        .show(ui, |ui| {
-                            self.contents(ui, world, content, cursor_tile);
-                        });
-                });
+            if docked {
+                // Pinned to the right edge, full window height. `resizable` lets
+                // you widen it.
+                egui::SidePanel::right("debug_panel")
+                    .default_width(300.0)
+                    .resizable(true)
+                    .show(ctx, |ui| self.panel_body(ui, world, content, cursor_tile));
+            } else {
+                // Free-floating, movable window.
+                egui::Window::new("debug · tuning")
+                    .default_width(300.0)
+                    .default_pos([20.0, 20.0])
+                    .resizable(true)
+                    .show(ctx, |ui| self.panel_body(ui, world, content, cursor_tile));
+            }
             // Read after the panel is built so it reflects this frame's
             // interaction (used to suppress firing through the panel).
             wants_pointer = ctx.wants_pointer_input();
         });
         wants_pointer
+    }
+
+    /// Shared panel contents for both docked and floating modes: header with the
+    /// dock toggle, then the scrolling widget stack.
+    fn panel_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        world: &mut World,
+        content: &Content,
+        cursor_tile: Option<(f32, f32)>,
+    ) {
+        ui.horizontal(|ui| {
+            ui.heading("debug · tuning  (F1)");
+            ui.checkbox(&mut self.docked, "docked");
+        });
+        // `drag_to_scroll(false)`: otherwise a click with any slight cursor
+        // movement (common on a trackpad) is taken as a scroll-drag and the
+        // button click is dropped.
+        egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
+            .show(ui, |ui| {
+                self.contents(ui, world, content, cursor_tile);
+            });
     }
 
     /// Paint the panel. Separate from [`run`] so the caller controls draw
