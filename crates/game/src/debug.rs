@@ -10,8 +10,11 @@
 //! ```
 
 use egui_macroquad::egui;
-use h2b_core::HitResult;
+use h2b_core::{
+    BaseItem, HitResult, ItemInstance, Rarity, Weapon, aggregate_item, dps_against, time_to_kill,
+};
 use h2b_game::{Content, Tunables, World};
+use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
 
 /// Where tunables export/import. Lives in the process working directory so the
@@ -25,6 +28,12 @@ pub struct DebugUi {
     spawn_count: i32,
     spawn_distance: u32,
     spawn_at_cursor: bool,
+    /// Selected weapon — index into [`Content::bases`] (weapon-slot only).
+    weapon_base: usize,
+    /// Arena pillar geometry for the next "load arena".
+    arena_pillars: bool,
+    /// Draw the flow-field next-step arrows (read by the renderer).
+    show_flow: bool,
     /// Last export/import outcome, shown under the buttons.
     status: String,
 }
@@ -43,6 +52,9 @@ impl DebugUi {
             spawn_count: 4,
             spawn_distance: 12,
             spawn_at_cursor: false,
+            weapon_base: 0,
+            arena_pillars: true,
+            show_flow: false,
             status: String::new(),
         }
     }
@@ -52,6 +64,11 @@ impl DebugUi {
         if is_key_pressed(KeyCode::F1) {
             self.visible = !self.visible;
         }
+    }
+
+    /// Whether the renderer should draw the flow-field arrows this frame.
+    pub fn show_flow(&self) -> bool {
+        self.visible && self.show_flow
     }
 
     /// Build and apply the panel for this frame. Returns `true` while egui is
@@ -92,12 +109,35 @@ impl DebugUi {
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
     ) {
+        ui.collapsing("level / map", |ui| {
+            ui.checkbox(&mut self.arena_pillars, "arena pillars (pathing obstacles)");
+            ui.horizontal(|ui| {
+                if ui.button("load arena").clicked() {
+                    let map = generate_arena(&ArenaParams {
+                        pillars: self.arena_pillars,
+                        ..Default::default()
+                    });
+                    reload_world(world, map);
+                }
+                if ui.button("load BSP").clicked() {
+                    let map = generate_bsp(&MapParams {
+                        seed: 42,
+                        ..Default::default()
+                    });
+                    reload_world(world, map);
+                }
+            });
+            ui.checkbox(&mut self.show_flow, "show flow field (enemy pathing)");
+        });
+
         ui.collapsing("combat", |ui| {
             let t = &mut world.tunables;
             ui.add(egui::Slider::new(&mut t.bullet_damage, 0.0..=200.0).text("bullet dmg"));
             ui.add(egui::Slider::new(&mut t.fire_rate, 0.5..=30.0).text("fire rate /s"));
             ui.add(egui::Slider::new(&mut t.projectile_speed, 4.0..=80.0).text("proj speed"));
             ui.add(egui::Slider::new(&mut t.bullet_lifetime, 0.2..=5.0).text("bullet life s"));
+            ui.add(egui::Slider::new(&mut t.crit_chance, 0.0..=1.0).text("crit chance"));
+            ui.add(egui::Slider::new(&mut t.crit_multiplier, 1.0..=5.0).text("crit mult"));
             ui.add(egui::Slider::new(&mut t.contact_dps, 0.0..=100.0).text("contact dps"));
         });
 
@@ -161,6 +201,64 @@ impl DebugUi {
         });
 
         ui.separator();
+        ui.strong("weapon / TTK");
+        // Weapon picker — weapon-slot bases only.
+        let weapons: Vec<usize> = content
+            .bases
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.slot == "weapon")
+            .map(|(i, _)| i)
+            .collect();
+        if !weapons.contains(&self.weapon_base) {
+            self.weapon_base = weapons.first().copied().unwrap_or(0);
+        }
+        let current_weapon = content
+            .bases
+            .get(self.weapon_base)
+            .map(|b| b.name.as_str())
+            .unwrap_or("—");
+        egui::ComboBox::from_label("weapon")
+            .selected_text(current_weapon)
+            .show_ui(ui, |ui| {
+                for &i in &weapons {
+                    ui.selectable_value(&mut self.weapon_base, i, content.bases[i].name.as_str());
+                }
+            });
+        if ui.button("equip selected (load stats → tunables)").clicked()
+            && let Some(base) = content.bases.get(self.weapon_base)
+        {
+            let w = weapon_from_base(base);
+            world.tunables.bullet_damage = w.damage_per_shot;
+            if w.fire_rate > 0.0 {
+                world.tunables.fire_rate = w.fire_rate;
+            }
+            world.tunables.crit_chance = w.crit_chance;
+            world.tunables.crit_multiplier = w.crit_multiplier;
+        }
+        // Live expected TTK/DPS of the *current* tunables weapon against the
+        // enemy archetype selected above — the core expected-value lens, the
+        // same numbers the sim reports. Retune the sliders and watch it move.
+        let weapon = Weapon {
+            damage_per_shot: world.tunables.bullet_damage,
+            fire_rate: world.tunables.fire_rate,
+            crit_chance: world.tunables.crit_chance,
+            crit_multiplier: world.tunables.crit_multiplier,
+        };
+        if let Some(enemy) = content.enemies.get(self.archetype) {
+            let target = enemy.as_combatant();
+            let dps = dps_against(&weapon, &target);
+            let ttk = time_to_kill(&weapon, &target)
+                .map(|s| format!("{s:.2}s"))
+                .unwrap_or_else(|| "∞".to_string());
+            ui.label(format!(
+                "vs {} (life {:.0}, armor {:.0}, eva {:.0}):",
+                enemy.id, target.current_life, target.armor, target.evasion
+            ));
+            ui.label(format!("  expected dps {dps:.1}   ttk {ttk}"));
+        }
+
+        ui.separator();
         ui.horizontal(|ui| {
             if ui.button("revive / heal").clicked() {
                 world.debug_revive();
@@ -218,6 +316,34 @@ impl DebugUi {
         };
         ui.label(last);
     }
+}
+
+/// Swap the world onto a new map, preserving the current tunables (a `World`
+/// is otherwise rebuilt from scratch with defaults). Inventory / kills / XP
+/// reset — this is a fresh level, not a checkpoint.
+fn reload_world(world: &mut World, map: Map) {
+    let saved = world.tunables;
+    *world = World::new(map);
+    world.tunables = saved;
+}
+
+/// Build a combat [`Weapon`] from a weapon base's intrinsic stats — a tier-0,
+/// zero-affix, no-attachment instance run through the canonical
+/// `aggregate_item` → `Weapon::from_stats` path (same as the sim), so the
+/// debug numbers match the balance tool's.
+fn weapon_from_base(base: &BaseItem) -> Weapon {
+    let item = ItemInstance {
+        base: base.id.clone(),
+        ilvl: 1,
+        rarity: Rarity::Basic,
+        seed: 0,
+        prefixes: vec![],
+        suffixes: vec![],
+        upgrade_tier: 0,
+        attached: vec![],
+    };
+    let stats = aggregate_item(&item, base, &[], &[]);
+    Weapon::from_stats(&stats)
 }
 
 /// Write the current tunables to [`TUNABLES_PATH`] as pretty RON (the project's

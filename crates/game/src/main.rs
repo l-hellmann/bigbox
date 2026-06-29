@@ -17,7 +17,7 @@
 use h2b_core::progression::level_for_total_xp;
 use h2b_core::Rarity;
 use h2b_game::{Command, Content, EnemyInstance, LootDrop, Player, Projectile, World};
-use h2b_procgen::{MapParams, Tile, generate_bsp};
+use h2b_procgen::{ArenaParams, Map, MapParams, Tile, generate_arena, generate_bsp};
 use macroquad::prelude::*;
 
 #[cfg(feature = "debug")]
@@ -74,11 +74,29 @@ fn load_content() -> Content {
     }
 }
 
+/// Pick the starting map from the `H2B_LEVEL` env var: `arena` (open debug room
+/// with pillars), `arena-empty` (no pillars), or anything else / unset → the
+/// regular BSP dungeon. The debug overlay can also swap maps live at runtime.
+fn starting_map(seed: u64) -> Map {
+    match std::env::var("H2B_LEVEL").as_deref() {
+        Ok("arena") => generate_arena(&ArenaParams {
+            seed,
+            ..Default::default()
+        }),
+        Ok("arena-empty") => generate_arena(&ArenaParams {
+            seed,
+            pillars: false,
+            ..Default::default()
+        }),
+        _ => generate_bsp(&MapParams {
+            seed,
+            ..Default::default()
+        }),
+    }
+}
+
 fn new_world(seed: u64) -> World {
-    World::new(generate_bsp(&MapParams {
-        seed,
-        ..Default::default()
-    }))
+    World::new(starting_map(seed))
 }
 
 #[macroquad::main(window_conf)]
@@ -130,6 +148,10 @@ async fn main() {
         clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
         set_camera(&camera);
         draw_scene(&world, &content, aim_hit);
+        #[cfg(feature = "debug")]
+        if dbg.show_flow() {
+            draw_flow_field(&world);
+        }
 
         // ---- 2D overlay pass ----
         set_default_camera();
@@ -315,6 +337,52 @@ fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
             vec3(0.3, 0.2, 0.3),
             Color::new(0.9, 0.3, 0.3, 0.9),
         );
+    }
+}
+
+/// Debug pathing viz: a short cyan arrow on each reachable floor tile pointing
+/// to the flow field's next step toward the player, and a yellow pad on the
+/// goal tile. Reads the same `FlowField` the enemies steer by, so it shows
+/// exactly how a swarm will route — around pillars, through doorways, etc.
+#[cfg(feature = "debug")]
+fn draw_flow_field(world: &World) {
+    use h2b_procgen::UNREACHABLE;
+    let flow = world.flow();
+    let map = &world.map;
+    let (px, py) = (world.player.x, world.player.y);
+    let r2 = RENDER_RADIUS * RENDER_RADIUS;
+    for ty in 0..map.height {
+        for tx in 0..map.width {
+            if !matches!(map.tile_at(tx, ty), Tile::Floor) {
+                continue;
+            }
+            let cx = tx as f32 + 0.5;
+            let cz = ty as f32 + 0.5;
+            if (cx - px).powi(2) + (cz - py).powi(2) > r2 {
+                continue;
+            }
+            if flow.distance_at(tx, ty) == UNREACHABLE {
+                continue;
+            }
+            match flow.next_step_from(tx, ty) {
+                Some((nx, ny)) => {
+                    let dx = (nx as f32 + 0.5) - cx;
+                    let dz = (ny as f32 + 0.5) - cz;
+                    let from = vec3(cx, 0.06, cz);
+                    let to = vec3(cx + dx * 0.5, 0.06, cz + dz * 0.5);
+                    draw_line_3d(from, to, Color::new(0.30, 0.80, 1.00, 0.7));
+                    draw_cube(to, vec3(0.09, 0.02, 0.09), None, Color::new(0.40, 0.95, 1.00, 0.9));
+                }
+                None => {
+                    draw_cube(
+                        vec3(cx, 0.06, cz),
+                        vec3(0.18, 0.02, 0.18),
+                        None,
+                        Color::new(1.00, 1.00, 0.40, 0.85),
+                    );
+                }
+            }
+        }
     }
 }
 

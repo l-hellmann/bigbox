@@ -303,6 +303,104 @@ fn carve_corridor(a: (u32, u32), b: (u32, u32), tiles: &mut [Tile], width: u32) 
     }
 }
 
+/// Parameters for [`generate_arena`] — the open debug/test room.
+#[derive(Debug, Clone, Copy)]
+pub struct ArenaParams {
+    pub width: u32,
+    pub height: u32,
+    /// When true, scatter a regular grid of 2×2 wall pillars for the enemy
+    /// pathfinder to route around. Spacing leaves wide corridors so the floor
+    /// stays fully connected.
+    pub pillars: bool,
+    pub seed: u64,
+}
+
+impl Default for ArenaParams {
+    fn default() -> Self {
+        Self {
+            width: 48,
+            height: 36,
+            pillars: true,
+            seed: 1,
+        }
+    }
+}
+
+/// Generate a single big rectangular room: solid border wall, floor interior,
+/// player spawn at the center, optional pillar grid. Unlike [`generate_bsp`]
+/// the layout is fully determined by the parameters — the `seed` only labels
+/// the map and seeds downstream gameplay RNG; same params → identical map.
+///
+/// Purpose-built for the debug level: open sightlines for weapon/TTK tuning,
+/// and (with `pillars`) non-trivial geometry to watch the flow-field router
+/// steer a swarm around. A connectivity test guarantees every floor tile is
+/// reachable from spawn, same invariant the BSP maps hold.
+pub fn generate_arena(params: &ArenaParams) -> Map {
+    // Floor below ~7 leaves no room for a border + interior; clamp so callers
+    // can't produce a degenerate (all-wall) map.
+    let w = params.width.max(7);
+    let h = params.height.max(7);
+    let mut tiles = vec![Tile::Floor; (w * h) as usize];
+    let idx = |x: u32, y: u32| (y * w + x) as usize;
+
+    // Border walls.
+    for x in 0..w {
+        tiles[idx(x, 0)] = Tile::Wall;
+        tiles[idx(x, h - 1)] = Tile::Wall;
+    }
+    for y in 0..h {
+        tiles[idx(0, y)] = Tile::Wall;
+        tiles[idx(w - 1, y)] = Tile::Wall;
+    }
+
+    if params.pillars {
+        // 2×2 pillars on a 6-tile grid → 4-wide corridors between them, and a
+        // floor ring inside the border (the grid starts at offset 3), so the
+        // perimeter is always a connected loop regardless of interior layout.
+        const SPACING: u32 = 6;
+        let mut py = 3;
+        while py + 1 < h - 2 {
+            let mut px = 3;
+            while px + 1 < w - 2 {
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        tiles[idx(px + dx, py + dy)] = Tile::Wall;
+                    }
+                }
+                px += SPACING;
+            }
+            py += SPACING;
+        }
+    }
+
+    // Spawn at the center, with its 3×3 neighborhood cleared to floor in case a
+    // pillar landed on it.
+    let (cx, cy) = (w / 2, h / 2);
+    for dy in -1i32..=1 {
+        for dx in -1i32..=1 {
+            let x = cx as i32 + dx;
+            let y = cy as i32 + dy;
+            if x > 0 && y > 0 && (x as u32) < w - 1 && (y as u32) < h - 1 {
+                tiles[idx(x as u32, y as u32)] = Tile::Floor;
+            }
+        }
+    }
+
+    Map {
+        width: w,
+        height: h,
+        tiles,
+        rooms: vec![Room {
+            x: 1,
+            y: 1,
+            w: w - 2,
+            h: h - 2,
+        }],
+        seed: params.seed,
+        player_spawn: (cx, cy),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +454,55 @@ mod tests {
         assert_eq!(m.tile_at(m.width, 0), Tile::Wall);
         assert_eq!(m.tile_at(0, m.height), Tile::Wall);
         assert_eq!(m.tile_at(u32::MAX, u32::MAX), Tile::Wall);
+    }
+
+    // ---- arena ----
+
+    #[test]
+    fn arena_spawn_is_floor_and_deterministic() {
+        let a = generate_arena(&ArenaParams::default());
+        let b = generate_arena(&ArenaParams::default());
+        assert_eq!(a.tiles, b.tiles, "same params → identical arena");
+        let (sx, sy) = a.player_spawn;
+        assert_eq!(a.tile_at(sx, sy), Tile::Floor, "spawn must be floor");
+    }
+
+    #[test]
+    fn arena_floor_is_fully_connected() {
+        // The load-bearing pathfinding invariant: with or without pillars,
+        // every floor tile must be reachable from spawn (no walled-off pockets
+        // for a swarm to get stuck behind).
+        for pillars in [false, true] {
+            let m = generate_arena(&ArenaParams {
+                pillars,
+                ..Default::default()
+            });
+            let flow = FlowField::compute(&m, m.player_spawn);
+            for y in 0..m.height {
+                for x in 0..m.width {
+                    if m.tile_at(x, y) == Tile::Floor {
+                        assert_ne!(
+                            flow.distance_at(x, y),
+                            UNREACHABLE,
+                            "floor ({x},{y}) unreachable from spawn (pillars={pillars})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arena_border_is_wall() {
+        let m = generate_arena(&ArenaParams::default());
+        for x in 0..m.width {
+            assert_eq!(m.tile_at(x, 0), Tile::Wall);
+            assert_eq!(m.tile_at(x, m.height - 1), Tile::Wall);
+        }
+        for y in 0..m.height {
+            assert_eq!(m.tile_at(0, y), Tile::Wall);
+            assert_eq!(m.tile_at(m.width - 1, y), Tile::Wall);
+        }
     }
 
     #[test]

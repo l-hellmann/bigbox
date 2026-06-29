@@ -241,6 +241,35 @@ the feature) — only the egui *editor* is gated. Keeps the lib identical for
 tests and the eventual SpacetimeDB reuse; difficulty presets later are just
 another `Tunables` producer.
 
+### The debug level (arena) — weapons, TTK, pathfinding
+
+The overlay doubles as a test harness. Launch straight into an open arena with
+`H2B_LEVEL=arena` (or `arena-empty` for no pillars; anything else → the BSP
+dungeon), or hot-swap maps from the overlay's **level / map** section. The arena
+(`h2b_procgen::generate_arena`) is a big bordered room with an optional 2×2
+pillar grid — open sightlines for tuning, real geometry for watching pathing.
+The same fully-connected invariant the BSP maps hold is property-tested.
+
+```
+H2B_LEVEL=arena cargo run -p head2box-game --features debug
+```
+
+Three tuning levers beyond the raw sliders:
+
+- **Weapon picker.** Select any weapon base and "equip" loads its real stats
+  (damage / fire rate / crit) into the tunables via the canonical
+  `aggregate_item → Weapon::from_stats` path — the *same* numbers the sim
+  reports, so realtime feel and offline balance stay tied. Crit is now a tunable
+  threaded onto the projectile (`Tunables::crit_chance/_multiplier`), defaulting
+  to no-crit so shipping behaviour is unchanged.
+- **Live TTK readout.** Expected DPS and time-to-kill of the current tunables
+  weapon against the selected enemy archetype (`dps_against` / `time_to_kill`),
+  updating as you drag sliders — the realtime mirror of the sim's TTK matrix.
+- **Flow-field viz.** "show flow field" draws the actual `FlowField` next-step
+  arrows enemies steer by (cyan arrows downhill toward the player, yellow goal
+  pad), so you can see a swarm route around pillars and through gaps before
+  committing pathing changes. Reads `World::flow()` (a debug-only accessor).
+
 ---
 
 ## Initial scope (v1 — playable demo)

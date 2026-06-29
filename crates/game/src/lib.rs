@@ -92,6 +92,12 @@ pub struct Tunables {
     pub fire_rate: f32,
     pub bullet_damage: f32,
     pub bullet_lifetime: f32,
+    /// Per-shot crit chance (0..=1) threaded into the projectile's `Weapon`.
+    /// Defaults to `0.0` (shipping projectiles don't crit); the weapon picker
+    /// in the debug overlay loads real values from a weapon base.
+    pub crit_chance: f32,
+    /// Crit damage multiplier (`1.5` = 150% on a crit). Paired with `crit_chance`.
+    pub crit_multiplier: f32,
     pub contact_dps: f32,
     pub spawn_interval: f32,
     pub spawn_batch: usize,
@@ -117,6 +123,8 @@ impl Default for Tunables {
             fire_rate: FIRE_RATE,
             bullet_damage: BULLET_DAMAGE,
             bullet_lifetime: BULLET_LIFETIME,
+            crit_chance: 0.0,
+            crit_multiplier: 1.0,
             contact_dps: CONTACT_DPS,
             spawn_interval: SPAWN_INTERVAL,
             spawn_batch: SPAWN_BATCH,
@@ -148,6 +156,11 @@ pub struct Projectile {
     pub vx: f32,
     pub vy: f32,
     pub damage: f32,
+    /// Crit chance / multiplier snapshotted from the tunables at fire time, so
+    /// the hit resolves with the same `Weapon` the shot was fired with even if
+    /// the player swaps weapons mid-flight.
+    pub crit_chance: f32,
+    pub crit_multiplier: f32,
     /// Seconds remaining before forced despawn.
     pub lifetime: f32,
 }
@@ -344,6 +357,8 @@ impl World {
                     vx: nx * self.tunables.projectile_speed,
                     vy: ny * self.tunables.projectile_speed,
                     damage: self.tunables.bullet_damage,
+                    crit_chance: self.tunables.crit_chance,
+                    crit_multiplier: self.tunables.crit_multiplier,
                     lifetime: self.tunables.bullet_lifetime,
                 });
                 self.player_fire_cooldown = 1.0 / self.tunables.fire_rate;
@@ -405,8 +420,8 @@ impl World {
                 let weapon = Weapon {
                     damage_per_shot: p.damage,
                     fire_rate: 0.0,
-                    crit_chance: 0.0,
-                    crit_multiplier: 1.0,
+                    crit_chance: p.crit_chance,
+                    crit_multiplier: p.crit_multiplier,
                 };
                 let mut rng = self.next_event_rng();
                 self.last_hit = Some(resolve_hit(
@@ -651,6 +666,13 @@ impl World {
     pub fn debug_revive(&mut self) {
         self.player.current_life = self.player.max_life;
         self.game_over = false;
+    }
+
+    /// Read-only access to the current flow field, for the debug pathing
+    /// visualization. The field is otherwise private (recomputed internally on
+    /// player-tile change); nothing outside debug rendering should need it.
+    pub fn flow(&self) -> &FlowField {
+        &self.flow
     }
 }
 
