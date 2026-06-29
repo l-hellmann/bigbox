@@ -439,12 +439,12 @@ fn draw_flow_field(world: &World) {
             if flow.distance_at(tx, ty) == UNREACHABLE {
                 continue;
             }
-            match flow.next_step_from(tx, ty) {
-                Some((nx, ny)) => {
-                    let dx = (nx as f32 + 0.5) - cx;
-                    let dz = (ny as f32 + 0.5) - cz;
+            // Show the actual smooth steering direction enemies follow (with
+            // the discrete saddle fallback), not the raw discrete next-step.
+            match flow.steer_from(cx, cz).or_else(|| flow.next_step_dir(cx, cz)) {
+                Some((dx, dz)) => {
                     let from = vec3(cx, 0.06, cz);
-                    let to = vec3(cx + dx * 0.5, 0.06, cz + dz * 0.5);
+                    let to = vec3(cx + dx * 0.4, 0.06, cz + dz * 0.4);
                     draw_line_3d(from, to, Color::new(0.30, 0.80, 1.00, 0.7));
                     draw_cube(to, vec3(0.09, 0.02, 0.09), None, Color::new(0.40, 0.95, 1.00, 0.9));
                 }

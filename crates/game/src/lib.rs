@@ -491,24 +491,42 @@ impl World {
         }
     }
 
-    /// Steer every enemy one step toward the player along the flow field.
-    /// At the goal tile (no downhill neighbor) they home straight onto the
-    /// player so they don't stall a tile away.
+    /// Steer every enemy toward the player along the flow field, using the
+    /// smooth gradient (`steer_from`) so motion is continuous and bends around
+    /// walls/pillars instead of hopping tile-center to tile-center. Fallbacks:
+    /// the discrete next-step at a symmetric saddle (where the smooth gradient
+    /// cancels), then homing straight at the player on the goal tile. Movement
+    /// is per-axis so an enemy grazing a wall slides along it rather than
+    /// clipping in.
     fn move_enemies(&mut self, dt: f32) {
         let (px, py) = (self.player.x, self.player.y);
+        let speed_mult = self.tunables.enemy_speed_mult;
+        // Borrow the immutable fields up front so they read as disjoint from
+        // the `&mut self.enemies` loop below.
+        let flow = &self.flow;
+        let map = &self.map;
         for e in &mut self.enemies {
-            let (tx, ty) = (e.x as u32, e.y as u32);
-            let target = match self.flow.next_step_from(tx, ty) {
-                Some((nx, ny)) => (nx as f32 + 0.5, ny as f32 + 0.5),
-                None => (px, py),
-            };
-            let dx = target.0 - e.x;
-            let dy = target.1 - e.y;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len > 1e-4 {
-                let step = (e.speed * self.tunables.enemy_speed_mult * dt).min(len);
-                e.x += dx / len * step;
-                e.y += dy / len * step;
+            let dir = flow
+                .steer_from(e.x, e.y)
+                .or_else(|| flow.next_step_dir(e.x, e.y))
+                .unwrap_or_else(|| {
+                    // On/at the goal tile: home straight at the player.
+                    let (dx, dy) = (px - e.x, py - e.y);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len > 1e-4 {
+                        (dx / len, dy / len)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                });
+            let step = e.speed * speed_mult * dt;
+            let nx = e.x + dir.0 * step;
+            let ny = e.y + dir.1 * step;
+            if floor_at(map, nx, e.y) {
+                e.x = nx;
+            }
+            if floor_at(map, e.x, ny) {
+                e.y = ny;
             }
         }
     }
@@ -598,12 +616,7 @@ impl World {
     }
 
     fn can_stand(&self, x: f32, y: f32) -> bool {
-        if x < 0.0 || y < 0.0 {
-            return false;
-        }
-        let tx = x as u32;
-        let ty = y as u32;
-        matches!(self.map.tile_at(tx, ty), Tile::Floor)
+        floor_at(&self.map, x, y)
     }
 
     /// Whether a projectile point at `(x, y)` is in a tile a bullet can fly
@@ -674,6 +687,14 @@ impl World {
     pub fn flow(&self) -> &FlowField {
         &self.flow
     }
+}
+
+/// Whether `(x, y)` (continuous tile coords) sits on a `Floor` tile — the
+/// shared passability test for the player, projectiles, and enemy steering.
+/// A free fn (not a `&self` method) so callers can borrow `&Map` disjointly
+/// from a `&mut self.enemies` loop.
+fn floor_at(map: &Map, x: f32, y: f32) -> bool {
+    x >= 0.0 && y >= 0.0 && matches!(map.tile_at(x as u32, y as u32), Tile::Floor)
 }
 
 /// Per-archetype movement speed (tiles/sec), keyed by enemy `id`. All slower
