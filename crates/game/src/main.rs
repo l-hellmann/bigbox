@@ -472,7 +472,9 @@ fn world_to_screen(view_proj: &Mat4, p: Vec3) -> Option<(f32, f32)> {
 }
 
 /// Draw a centered, stacked block of text lines on a dark translucent box,
-/// anchored so the block sits *above* `(sx, sy)` (the entity's head).
+/// anchored so the block sits *above* `(sx, sy)` (the entity's head). The box is
+/// clamped to the screen so a label near an edge (notably the player's) stays
+/// fully visible rather than sliding off.
 #[cfg(feature = "debug")]
 fn draw_label(lines: &[String], sx: f32, sy: f32, color: Color) {
     const SIZE: f32 = 14.0;
@@ -483,23 +485,20 @@ fn draw_label(lines: &[String], sx: f32, sy: f32, color: Color) {
         .iter()
         .map(|l| measure_text(l, None, SIZE as u16, 1.0).width)
         .fold(0.0_f32, f32::max);
-    let block_h = LINE_H * lines.len() as f32;
-    let box_top = sy - block_h - PAD * 2.0;
+    let bw = max_w + PAD * 2.0;
+    let bh = LINE_H * lines.len() as f32 + PAD * 2.0;
 
-    // Dark translucent backing box.
-    draw_rectangle(
-        sx - max_w * 0.5 - PAD,
-        box_top,
-        max_w + PAD * 2.0,
-        block_h + PAD * 2.0,
-        Color::new(0.02, 0.02, 0.05, 0.6),
-    );
+    // Anchor above the head, then clamp the whole box inside the screen.
+    let bx = (sx - bw * 0.5).clamp(0.0, (screen_width() - bw).max(0.0));
+    let by = (sy - bh - PAD).clamp(0.0, (screen_height() - bh).max(0.0));
 
-    // Lines, baseline-stacked from the top of the box.
-    let mut y = box_top + PAD + SIZE * 0.8;
+    draw_rectangle(bx, by, bw, bh, Color::new(0.02, 0.02, 0.05, 0.6));
+
+    // Lines, baseline-stacked, centered within the box.
+    let mut y = by + PAD + SIZE * 0.8;
     for line in lines {
         let w = measure_text(line, None, SIZE as u16, 1.0).width;
-        draw_text(line, sx - w * 0.5, y, SIZE, color);
+        draw_text(line, bx + (bw - w) * 0.5, y, SIZE, color);
         y += LINE_H;
     }
 }
@@ -555,6 +554,8 @@ fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
         draw_label(&lines, sx, sy, Color::new(0.97, 0.85, 0.55, 1.0));
     }
 
+    // Player block — always drawn, independent of the enemy `MAX_LABELS` cap,
+    // and last so it sits on top of any overlapping enemy labels.
     let p = &world.player;
     let head = vec3(px, PLAYER_HALF * 2.0 + 0.65, py);
     if let Some((sx, sy)) = world_to_screen(&view_proj, head) {
