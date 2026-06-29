@@ -92,6 +92,7 @@ impl DebugUi {
         world: &mut World,
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
+        pad_diag: &crate::PadDiag,
     ) -> bool {
         if !self.visible {
             return false;
@@ -121,14 +122,18 @@ impl DebugUi {
                 egui::SidePanel::right("debug_panel")
                     .default_width(300.0)
                     .resizable(true)
-                    .show(ctx, |ui| self.panel_body(ui, world, content, cursor_tile));
+                    .show(ctx, |ui| {
+                        self.panel_body(ui, world, content, cursor_tile, pad_diag)
+                    });
             } else {
                 // Free-floating, movable window.
                 egui::Window::new("debug · tuning")
                     .default_width(300.0)
                     .default_pos([20.0, 20.0])
                     .resizable(true)
-                    .show(ctx, |ui| self.panel_body(ui, world, content, cursor_tile));
+                    .show(ctx, |ui| {
+                        self.panel_body(ui, world, content, cursor_tile, pad_diag)
+                    });
             }
             // Read after the panel is built so it reflects this frame's
             // interaction (used to suppress firing through the panel).
@@ -145,6 +150,7 @@ impl DebugUi {
         world: &mut World,
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
+        pad_diag: &crate::PadDiag,
     ) {
         ui.horizontal(|ui| {
             ui.heading("debug · tuning  (F1)");
@@ -156,7 +162,7 @@ impl DebugUi {
         egui::ScrollArea::vertical()
             .drag_to_scroll(false)
             .show(ui, |ui| {
-                self.contents(ui, world, content, cursor_tile);
+                self.contents(ui, world, content, cursor_tile, pad_diag);
             });
     }
 
@@ -174,7 +180,10 @@ impl DebugUi {
         world: &mut World,
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
+        pad_diag: &crate::PadDiag,
     ) {
+        controller_section(ui, pad_diag);
+
         ui.collapsing("level / map", |ui| {
             ui.checkbox(&mut self.arena_pillars, "arena pillars (pathing obstacles)");
             ui.horizontal(|ui| {
@@ -392,6 +401,53 @@ impl DebugUi {
         };
         ui.label(last);
     }
+}
+
+/// Live controller diagnostics — surfaces whether gilrs sees a pad, its SDL
+/// mapping (the usual "connected but dead" culprit when missing), and live
+/// stick/trigger/button state so you can confirm inputs are reaching the game.
+fn controller_section(ui: &mut egui::Ui, diag: &crate::PadDiag) {
+    egui::CollapsingHeader::new("controller")
+        .default_open(true)
+        .show(ui, |ui| {
+            if !diag.initialized {
+                ui.colored_label(egui::Color32::RED, "gilrs failed to initialize");
+                return;
+            }
+            if diag.pads.is_empty() {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "no gamepad detected — gilrs sees 0 devices",
+                );
+                ui.label("(on macOS, Xbox controllers over USB use a proprietary");
+                ui.label(" protocol IOKit/HID can't read — try Bluetooth pairing)");
+                return;
+            }
+            for (i, p) in diag.pads.iter().enumerate() {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, format!("[{i}] {}", p.name));
+                let mapped = !p.mapping.starts_with("UNMAPPED");
+                ui.colored_label(
+                    if mapped { egui::Color32::GRAY } else { egui::Color32::YELLOW },
+                    format!("  mapping: {}", p.mapping),
+                );
+                ui.label(format!("  power: {}", p.power));
+                ui.label(format!(
+                    "  L-stick: ({:+.2}, {:+.2})",
+                    p.left_stick.0, p.left_stick.1
+                ));
+                ui.label(format!(
+                    "  R-stick: ({:+.2}, {:+.2})",
+                    p.right_stick.0, p.right_stick.1
+                ));
+                ui.label(format!("  RT: {:.2}", p.right_trigger));
+                let btns = if p.buttons_down.is_empty() {
+                    "—".to_string()
+                } else {
+                    p.buttons_down.join(", ")
+                };
+                ui.label(format!("  buttons: {btns}"));
+            }
+        });
 }
 
 /// Swap the world onto a new map, preserving the current tunables (a `World`

@@ -184,6 +184,28 @@ struct PadInput {
     fire: bool,
 }
 
+/// Diagnostic snapshot of one connected gamepad, for the debug overlay's
+/// controller panel.
+#[cfg(feature = "debug")]
+pub struct PadInfo {
+    pub name: String,
+    /// SDL mapping name, or a flag that the device is unmapped (axes/buttons
+    /// won't resolve without a mapping — the usual "connected but dead" cause).
+    pub mapping: String,
+    pub power: String,
+    pub left_stick: (f32, f32),
+    pub right_stick: (f32, f32),
+    pub right_trigger: f32,
+    pub buttons_down: Vec<&'static str>,
+}
+
+/// gilrs status + the list of connected pads, for the debug overlay.
+#[cfg(feature = "debug")]
+pub struct PadDiag {
+    pub initialized: bool,
+    pub pads: Vec<PadInfo>,
+}
+
 /// Gamepad polling via `gilrs` — works native and on wasm (browser Gamepad API).
 mod pad {
     use super::PadInput;
@@ -233,6 +255,61 @@ mod pad {
                 move_dir,
                 aim_dir,
                 fire,
+            }
+        }
+
+        /// Diagnostic snapshot of every connected pad (debug overlay only).
+        #[cfg(feature = "debug")]
+        pub fn debug_diag(&self) -> super::PadDiag {
+            const BUTTONS: &[(&str, Button)] = &[
+                ("A", Button::South),
+                ("B", Button::East),
+                ("X", Button::West),
+                ("Y", Button::North),
+                ("LB", Button::LeftTrigger),
+                ("RB", Button::RightTrigger),
+                ("LT", Button::LeftTrigger2),
+                ("RT", Button::RightTrigger2),
+                ("Start", Button::Start),
+                ("Select", Button::Select),
+                ("L3", Button::LeftThumb),
+                ("R3", Button::RightThumb),
+                ("Up", Button::DPadUp),
+                ("Down", Button::DPadDown),
+                ("Left", Button::DPadLeft),
+                ("Right", Button::DPadRight),
+            ];
+            let Some(gilrs) = self.0.as_ref() else {
+                return super::PadDiag {
+                    initialized: false,
+                    pads: Vec::new(),
+                };
+            };
+            let pads = gilrs
+                .gamepads()
+                .map(|(_, gp)| super::PadInfo {
+                    name: gp.name().to_string(),
+                    mapping: gp
+                        .map_name()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "UNMAPPED — no SDL mapping".to_string()),
+                    power: format!("{:?}", gp.power_info()),
+                    left_stick: (gp.value(Axis::LeftStickX), gp.value(Axis::LeftStickY)),
+                    right_stick: (gp.value(Axis::RightStickX), gp.value(Axis::RightStickY)),
+                    right_trigger: gp
+                        .button_data(Button::RightTrigger2)
+                        .map(|d| d.value())
+                        .unwrap_or(0.0),
+                    buttons_down: BUTTONS
+                        .iter()
+                        .filter(|(_, b)| gp.is_pressed(*b))
+                        .map(|(n, _)| *n)
+                        .collect(),
+                })
+                .collect();
+            super::PadDiag {
+                initialized: true,
+                pads,
             }
         }
     }
@@ -288,7 +365,8 @@ async fn main() {
         #[cfg(feature = "debug")]
         let block_fire = {
             dbg.handle_toggle();
-            dbg.run(&mut world, &content, aim_hit.map(|h| (h.x, h.z)))
+            let pad_diag = pads.debug_diag();
+            dbg.run(&mut world, &content, aim_hit.map(|h| (h.x, h.z)), &pad_diag)
         };
         #[cfg(not(feature = "debug"))]
         let block_fire = false;
