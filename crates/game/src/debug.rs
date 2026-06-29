@@ -92,6 +92,15 @@ impl DebugUi {
         if !self.visible {
             return false;
         }
+        // egui-miniquad only propagates the native DPI to egui on a *change*
+        // after startup, not on the first frame — so with `high_dpi` the panel
+        // would render at half size (1.0 pixels-per-point in a 2× framebuffer).
+        // Pin it to the display scale ourselves. `set_pixels_per_point` targets
+        // an absolute value via the zoom factor, so it stays correct even if
+        // egui-miniquad later sets the native scale on a monitor change.
+        let dpi = screen_dpi_scale();
+        egui_macroquad::cfg(|ctx| ctx.set_pixels_per_point(dpi));
+
         let mut wants_pointer = false;
         egui_macroquad::ui(|ctx| {
             // Pinned to the right edge, full window height. `resizable` lets you
