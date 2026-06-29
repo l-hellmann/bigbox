@@ -248,7 +248,9 @@ The overlay doubles as a test harness. Launch straight into an open arena with
 dungeon), or hot-swap maps from the overlay's **level / map** section. The arena
 (`h2b_procgen::generate_arena`) is a big bordered room with an optional 2×2
 pillar grid — open sightlines for tuning, real geometry for watching pathing.
-The same fully-connected invariant the BSP maps hold is property-tested.
+The same fully-connected invariant the BSP maps hold is property-tested. Both
+arena entry paths (launch and overlay button) start with **auto-spawn off** so
+you populate it deliberately rather than getting swarmed on entry.
 
 ```
 H2B_LEVEL=arena cargo run -p head2box-game --features debug

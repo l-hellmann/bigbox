@@ -74,21 +74,35 @@ fn load_content() -> Content {
     }
 }
 
-/// Pick the starting map from the `H2B_LEVEL` env var: `arena` (open debug room
+/// Which starting level, from the `H2B_LEVEL` env var: `arena` (open debug room
 /// with pillars), `arena-empty` (no pillars), or anything else / unset → the
 /// regular BSP dungeon. The debug overlay can also swap maps live at runtime.
-fn starting_map(seed: u64) -> Map {
+enum Level {
+    Bsp,
+    Arena,
+    ArenaEmpty,
+}
+
+fn selected_level() -> Level {
     match std::env::var("H2B_LEVEL").as_deref() {
-        Ok("arena") => generate_arena(&ArenaParams {
+        Ok("arena") => Level::Arena,
+        Ok("arena-empty") => Level::ArenaEmpty,
+        _ => Level::Bsp,
+    }
+}
+
+fn starting_map(seed: u64) -> Map {
+    match selected_level() {
+        Level::Arena => generate_arena(&ArenaParams {
             seed,
             ..Default::default()
         }),
-        Ok("arena-empty") => generate_arena(&ArenaParams {
+        Level::ArenaEmpty => generate_arena(&ArenaParams {
             seed,
             pillars: false,
             ..Default::default()
         }),
-        _ => generate_bsp(&MapParams {
+        Level::Bsp => generate_bsp(&MapParams {
             seed,
             ..Default::default()
         }),
@@ -96,7 +110,13 @@ fn starting_map(seed: u64) -> Map {
 }
 
 fn new_world(seed: u64) -> World {
-    World::new(starting_map(seed))
+    let mut world = World::new(starting_map(seed));
+    // The arena is the controlled-testing level: start with waves suspended so
+    // you spawn enemies deliberately rather than getting swarmed on entry.
+    if matches!(selected_level(), Level::Arena | Level::ArenaEmpty) {
+        world.tunables.auto_spawn = false;
+    }
+    world
 }
 
 #[macroquad::main(window_conf)]

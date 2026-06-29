@@ -126,6 +126,8 @@ impl DebugUi {
                         ..Default::default()
                     });
                     reload_world(world, map);
+                    // Controlled-testing level: suspend waves, spawn by hand.
+                    world.tunables.auto_spawn = false;
                 }
                 if ui.button("load BSP").clicked() {
                     let map = generate_bsp(&MapParams {
