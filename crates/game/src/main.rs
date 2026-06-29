@@ -524,8 +524,13 @@ fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
         .map(|(i, e)| ((e.x - px).powi(2) + (e.y - py).powi(2), i))
         .collect();
     ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ranked.truncate(MAX_LABELS);
 
-    for &(d2, i) in ranked.iter().take(MAX_LABELS) {
+    // Draw the selected labels in descending id order so the lowest id ends up
+    // drawn last — i.e. on top — when boxes overlap. Lower id wins the layer.
+    ranked.sort_by(|a, b| world.enemies[b.1].id.cmp(&world.enemies[a.1].id));
+
+    for &(d2, i) in &ranked {
         let e = &world.enemies[i];
         let id = content
             .enemies
