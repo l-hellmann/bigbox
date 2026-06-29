@@ -41,11 +41,9 @@ const RENDER_RADIUS: f32 = 30.0;
 /// Player cube half-extent (render only; collision uses point tests in core).
 const PLAYER_HALF: f32 = 0.35;
 
-fn map_seed() -> u64 {
-    std::env::var("H2B_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(42)
+/// Map seed from `H2B_SEED`, if set and parseable.
+fn map_seed_env() -> Option<u64> {
+    std::env::var("H2B_SEED").ok().and_then(|s| s.parse().ok())
 }
 
 fn window_conf() -> Conf {
@@ -74,30 +72,73 @@ fn load_content() -> Content {
     }
 }
 
-/// Which starting level, from the `H2B_LEVEL` env var: `arena` (open debug room
-/// with pillars), `arena-empty` (no pillars), or anything else / unset → the
-/// regular BSP dungeon. The debug overlay can also swap maps live at runtime.
+/// Starting level: `arena` (open debug room with pillars), `arena-empty` (no
+/// pillars), or the regular BSP dungeon. The debug overlay can also swap maps
+/// live at runtime.
+#[derive(Clone, Copy)]
 enum Level {
     Bsp,
     Arena,
     ArenaEmpty,
 }
 
-/// Resolve the level from the first CLI positional arg (what the `cargo arena`
-/// alias passes via `-- arena`), falling back to the `H2B_LEVEL` env var, then
-/// the BSP dungeon.
-fn selected_level() -> Level {
-    let from_arg = std::env::args().nth(1);
-    let from_env = std::env::var("H2B_LEVEL").ok();
-    match from_arg.as_deref().or(from_env.as_deref()) {
-        Some("arena") => Level::Arena,
-        Some("arena-empty") => Level::ArenaEmpty,
-        _ => Level::Bsp,
+/// CLI surface for local dev — only compiled under the `debug` feature, so the
+/// prod/wasm build pulls in no clap. The `cargo arena` / `arena-empty` / `dbg`
+/// aliases drive this; everything has an env-var or default fallback so a bare
+/// `cargo run` still works.
+#[cfg(feature = "debug")]
+#[derive(clap::Parser)]
+#[command(name = "h2b-game", about = "head2box runtime (debug build)")]
+struct Cli {
+    /// Starting level.
+    #[arg(value_enum, default_value_t = LevelArg::Bsp)]
+    level: LevelArg,
+    /// Map seed (overrides H2B_SEED; default 42).
+    #[arg(long)]
+    seed: Option<u64>,
+}
+
+#[cfg(feature = "debug")]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum LevelArg {
+    Bsp,
+    Arena,
+    ArenaEmpty,
+}
+
+#[cfg(feature = "debug")]
+impl From<LevelArg> for Level {
+    fn from(l: LevelArg) -> Self {
+        match l {
+            LevelArg::Bsp => Level::Bsp,
+            LevelArg::Arena => Level::Arena,
+            LevelArg::ArenaEmpty => Level::ArenaEmpty,
+        }
     }
 }
 
-fn starting_map(seed: u64) -> Map {
-    match selected_level() {
+/// Resolve `(level, seed)` for this run. Debug builds parse the CLI via clap;
+/// non-debug (prod/wasm) builds read the `H2B_LEVEL` / `H2B_SEED` env vars only,
+/// with no arg parser linked in.
+#[cfg(feature = "debug")]
+fn resolve_run() -> (Level, u64) {
+    use clap::Parser;
+    let cli = Cli::parse();
+    (cli.level.into(), cli.seed.or_else(map_seed_env).unwrap_or(42))
+}
+
+#[cfg(not(feature = "debug"))]
+fn resolve_run() -> (Level, u64) {
+    let level = match std::env::var("H2B_LEVEL").as_deref() {
+        Ok("arena") => Level::Arena,
+        Ok("arena-empty") => Level::ArenaEmpty,
+        _ => Level::Bsp,
+    };
+    (level, map_seed_env().unwrap_or(42))
+}
+
+fn build_map(level: Level, seed: u64) -> Map {
+    match level {
         Level::Arena => generate_arena(&ArenaParams {
             seed,
             ..Default::default()
@@ -114,11 +155,11 @@ fn starting_map(seed: u64) -> Map {
     }
 }
 
-fn new_world(seed: u64) -> World {
-    let mut world = World::new(starting_map(seed));
+fn new_world(level: Level, seed: u64) -> World {
+    let mut world = World::new(build_map(level, seed));
     // The arena is the controlled-testing level: start with waves suspended so
     // you spawn enemies deliberately rather than getting swarmed on entry.
-    if matches!(selected_level(), Level::Arena | Level::ArenaEmpty) {
+    if matches!(level, Level::Arena | Level::ArenaEmpty) {
         world.tunables.auto_spawn = false;
     }
     world
@@ -126,9 +167,9 @@ fn new_world(seed: u64) -> World {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let seed = map_seed();
+    let (level, seed) = resolve_run();
     let content = load_content();
-    let mut world = new_world(seed);
+    let mut world = new_world(level, seed);
 
     #[cfg(feature = "debug")]
     let mut dbg = debug::DebugUi::new();
@@ -141,7 +182,7 @@ async fn main() {
         }
         // Restart from the dead screen.
         if world.game_over && is_key_pressed(KeyCode::R) {
-            world = new_world(seed);
+            world = new_world(level, seed);
         }
 
         // Build the follow-cam first: aim raycasting needs it to unproject

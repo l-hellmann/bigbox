@@ -25,8 +25,10 @@ macroquad = { workspace = true }
 egui-macroquad = { version = "0.17", optional = true }
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [features]
-# Compiles the in-game debug/tuning overlay (egui) and tunable export/import.
-# Off by default → stripped from a normal `cargo build --release`.
-debug = ["dep:egui-macroquad", "dep:serde", "dep:ron"]
+# Compiles the local-dev tooling: the in-game tuning overlay (egui), tunable
+# RON export/import, and clap CLI arg parsing. Off by default → none of it
+# (nor egui/serde/ron/clap) lands in a `--release` or wasm build.
+debug = ["dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]

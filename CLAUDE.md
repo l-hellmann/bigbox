@@ -219,12 +219,14 @@ feel oppressive, is the fire rate satisfying, how dense should waves be.
 cargo run -p head2box-game --features debug   # or: cargo dbg
 ```
 
-Feature-gated (`debug` → optional `egui-macroquad`), so a normal
-`cargo build`/`--release` compiles none of it. **F1** toggles the panel.
-`.cargo/config.toml` defines shortcut aliases — `cargo dbg` (BSP dungeon),
-`cargo arena`, `cargo arena-empty`. Aliases can't set env vars, so the level
-rides in as a CLI arg (`-- arena`) that `selected_level()` reads, equivalent to
-`H2B_LEVEL`.
+Feature-gated: the `debug` feature pulls the local-dev-only deps (`egui-macroquad`,
+`serde`/`ron` for tunable export, and `clap` for CLI parsing), so a normal
+`cargo build`/`--release` and the wasm build compile none of it. **F1** toggles
+the panel. `.cargo/config.toml` defines shortcut aliases — `cargo dbg` (BSP
+dungeon), `cargo arena`, `cargo arena-empty`. Aliases can't set env vars, so the
+level rides in as a CLI arg (`-- arena`); under the `debug` feature a clap parser
+(`Cli`) reads it (plus `--seed`, `--help`), and a non-debug build falls back to
+reading `H2B_LEVEL` / `H2B_SEED` env vars with no arg parser linked in.
 
 Mechanism — the load-bearing refactor: every gameplay knob that used to be a
 `const` now lives in `h2b_game::Tunables` on `World`, and the simulation reads
