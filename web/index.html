@@ -26,6 +26,7 @@
         #loading {
             position: fixed;
             inset: 0;
+            z-index: 10;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -35,10 +36,31 @@
             text-transform: uppercase;
             pointer-events: none;
         }
+        /* Nudge to satisfy the Gamepad API's privacy gate (a pad is invisible
+           until a button is pressed on it). Self-dismisses — see the script. */
+        #gamepad-hint {
+            position: fixed;
+            left: 50%;
+            bottom: 48px;
+            z-index: 10;
+            transform: translateX(-50%);
+            color: #9a9aa3;
+            background: rgba(10, 10, 14, 0.72);
+            border: 1px solid #2a2a32;
+            border-radius: 999px;
+            padding: 6px 15px;
+            font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace;
+            letter-spacing: .03em;
+            white-space: nowrap;
+            pointer-events: none;
+            transition: opacity .4s ease;
+        }
+        #gamepad-hint.hidden { opacity: 0; }
     </style>
 </head>
 <body>
     <div id="loading">loading…</div>
+    <div id="gamepad-hint">🎮 press a button on your controller to connect it</div>
     <!-- Click-to-focus so keyboard input reaches the canvas immediately. -->
     <canvas id="glcanvas" tabindex="1"></canvas>
 
@@ -77,6 +99,20 @@
                 }
             };
             requestAnimationFrame(tick);
+        })();
+    </script>
+    <script>
+        // Gamepad hint lifecycle: nudge the user to satisfy the Gamepad API's
+        // button-press privacy gate, but never nag. It hides once a controller
+        // connects, on first keyboard input (= playing on keyboard), or after a
+        // short timeout. quad-gamepad.js logs the actual connect/disconnect.
+        (function () {
+            const hint = document.getElementById("gamepad-hint");
+            if (!hint) return;
+            const hide = () => hint.classList.add("hidden");
+            window.addEventListener("gamepadconnected", hide);
+            window.addEventListener("keydown", hide, { once: true });
+            setTimeout(hide, 8000);
         })();
     </script>
 </body>

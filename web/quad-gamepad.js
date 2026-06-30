@@ -44,3 +44,26 @@ miniquad_add_plugin({
     name: "quad_gamepad",
     version: 1,
 });
+
+// Diagnostics. The Gamepad API surfaces a pad only after the first button press
+// on it (a privacy gate), so "connected" here means the gate was satisfied —
+// this is how you confirm the browser actually sees the controller.
+window.addEventListener("gamepadconnected", function (e) {
+    var g = e.gamepad;
+    console.log(
+        "[gamepad] connected: index " + g.index + ', "' + g.id + '", mapping: ' +
+        (g.mapping || "(non-standard)") + ", " + g.axes.length + " axes, " +
+        g.buttons.length + " buttons"
+    );
+    // The wasm assumes the W3C "standard" layout (axes 0/1 = left stick, 2/3 =
+    // right, button 7 = right trigger). A non-standard pad may map elsewhere.
+    if (g.mapping !== "standard") {
+        console.warn(
+            "[gamepad] non-standard mapping — sticks/trigger may read wrong; " +
+            "the game assumes the standard layout."
+        );
+    }
+});
+window.addEventListener("gamepaddisconnected", function (e) {
+    console.log("[gamepad] disconnected: index " + e.gamepad.index + ', "' + e.gamepad.id + '"');
+});
