@@ -1,6 +1,6 @@
 # web (wasm) build
 
-Browser build of the macroquad shell. Single-player, keyboard/mouse.
+Browser build of the macroquad shell. Single-player; keyboard/mouse + gamepad.
 
 ```sh
 make web-serve        # build wasm + serve → http://localhost:8000
@@ -34,15 +34,22 @@ the native equivalents are `H2B_SEED` / `H2B_LEVEL` (and the debug-build CLI).
   from the `sapp-jsutils` / `quad-url` crates. The bundle embeds its own
   sapp_jsutils but keeps the `js_object` helpers IIFE-private, so the standalone
   copy is loaded to expose them. Refresh alongside their crate versions.
+- `quad-gamepad.js` — hand-rolled miniquad plugin (not a vendored crate) that
+  reads the browser Gamepad API and exposes its numeric axes/buttons to the wasm.
+  The web counterpart to gilrs; see the gamepad note below.
 - `head2box.wasm` — build output (git-ignored; produced by `make web`).
 
 ## Notes / caveats
 
 - **Content** is embedded via `include_str!`, so there's nothing to fetch at
   runtime — no asset server, no CORS surprises.
-- **No gamepad on web.** gilrs reaches the browser Gamepad API through
-  wasm-bindgen, whose imports macroquad's plain loader can't provide; gilrs is
-  native-only and the web build ships a no-op pad stub. Deferred.
+- **Gamepad on web** works, but *not* via gilrs — its web backend needs
+  wasm-bindgen glue macroquad's loader can't provide. gilrs is native-only; on
+  web, `quad-gamepad.js` reads the browser Gamepad API and passes the numeric
+  axes/buttons across the wasm boundary (no wasm-bindgen, no marshaling), read
+  by the `pad` module's wasm arm. Same twin-stick mapping as native. Browsers
+  only surface a controller after you press a button on it (a privacy gate), so
+  it won't register until then.
 - **No debug overlay on web.** The `debug` feature (egui) is native-only for the
   same wasm-bindgen reason — `build.sh` builds release without it.
 - **RNG**: gameplay RNG is always seeded, so `getrandom` is never called; on

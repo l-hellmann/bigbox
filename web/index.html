@@ -50,6 +50,9 @@
          before load(). -->
     <script src="sapp_jsutils.js"></script>
     <script src="quad-url.js"></script>
+    <!-- quad-gamepad: twin-stick gamepad via the browser Gamepad API as plain
+         numbers (no wasm-bindgen). gilrs is native-only; this is the web path. -->
+    <script src="quad-gamepad.js"></script>
     <script>
         // macroquad's loader. No wasm-bindgen — the bundle provides the raw
         // imports the wasm expects. `load` fetches + instantiates the module

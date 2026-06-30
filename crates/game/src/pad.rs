@@ -2,9 +2,12 @@
 //! right trigger = fire. Resolves one `PadInput` per frame; the runtime merges
 //! it with keyboard/mouse in `collect_input`.
 //!
-//! Native uses `gilrs`. On wasm the web build ships a no-op stub: gilrs reaches
-//! the browser Gamepad API through wasm-bindgen, whose JS glue macroquad's plain
-//! loader can't provide — so gamepad-on-web is deferred (keyboard/mouse work).
+//! Native uses `gilrs`. gilrs *also* has a web backend, but it reaches the
+//! browser Gamepad API through wasm-bindgen, whose JS glue macroquad's plain
+//! loader can't provide — so on wasm we skip gilrs and read the Gamepad API
+//! ourselves via a small miniquad plugin (`web/quad-gamepad.js`), passing the
+//! numeric axes/buttons straight across the boundary. Same twin-stick mapping
+//! either way.
 
 #[cfg(not(target_arch = "wasm32"))]
 use gilrs::{Axis, Button, Gilrs};
@@ -171,29 +174,94 @@ impl Pads {
     }
 }
 
-/// Web stub: no gamepad backend (see the module note). Keyboard/mouse input is
-/// unaffected — it flows through macroquad, not here.
+/// Web gamepad polling via the browser Gamepad API, bridged by `quad-gamepad.js`
+/// (a miniquad plugin). The API's axes/buttons are plain numbers, so they cross
+/// the wasm boundary directly — no wasm-bindgen, no string marshaling, unlike
+/// gilrs's web backend (the whole reason gilrs is native-only here).
 #[cfg(target_arch = "wasm32")]
-pub struct Pads;
+mod web {
+    use super::PadInput;
 
-#[cfg(target_arch = "wasm32")]
-impl Pads {
-    pub fn new() -> Self {
-        Pads
+    // Imports provided by `web/quad-gamepad.js`. All numeric.
+    unsafe extern "C" {
+        /// 1 if a connected gamepad is present (and cached for this poll), else 0.
+        fn quad_gamepad_connected() -> i32;
+        /// Axis value of the cached gamepad, or 0.0 if out of range.
+        fn quad_gamepad_axis(index: i32) -> f32;
+        /// Button analog value (0..1) of the cached gamepad, or 0.0.
+        fn quad_gamepad_button(index: i32) -> f32;
     }
 
-    /// Always neutral: no pad on web.
-    pub fn read(&mut self, _deadzone: f32) -> PadInput {
-        PadInput::default()
-    }
+    // "Standard" gamepad mapping indices — the same physical controls the native
+    // gilrs path reads (left stick = move, right stick = aim, RT = fire).
+    const AXIS_LEFT_X: i32 = 0;
+    const AXIS_LEFT_Y: i32 = 1;
+    const AXIS_RIGHT_X: i32 = 2;
+    const AXIS_RIGHT_Y: i32 = 3;
+    const BUTTON_RIGHT_TRIGGER: i32 = 7;
+    /// Analog trigger reads as "held" past this value.
+    const TRIGGER_THRESHOLD: f32 = 0.5;
 
-    /// Reports "no backend" to the debug overlay (debug builds don't target
-    /// wasm in practice, but keep the surface consistent).
-    #[cfg(feature = "debug")]
-    pub fn debug_diag(&self) -> PadDiag {
-        PadDiag {
-            initialized: false,
-            pads: Vec::new(),
+    pub struct Pads;
+
+    impl Pads {
+        pub fn new() -> Self {
+            Pads
+        }
+
+        /// Poll the first connected gamepad. `deadzone` (0..1) matches the native
+        /// path's stick-magnitude neutral zone.
+        pub fn read(&mut self, deadzone: f32) -> PadInput {
+            // `connected()` refreshes the cached gamepad snapshot as a side
+            // effect, so it must be called before reading axes/buttons.
+            if unsafe { quad_gamepad_connected() } == 0 {
+                return PadInput::default();
+            }
+            let axis = |i| unsafe { quad_gamepad_axis(i) };
+
+            // The Gamepad API already reports stick Y as +down, which *is* our
+            // world dy (up = −dy). So, unlike the gilrs path (which gets +up and
+            // flips), we pass Y straight through.
+            let deadzoned = |x: f32, y: f32| -> Option<(f32, f32)> {
+                if (x * x + y * y).sqrt() < deadzone {
+                    None
+                } else {
+                    Some((x, y))
+                }
+            };
+
+            let move_dir = deadzoned(axis(AXIS_LEFT_X), axis(AXIS_LEFT_Y));
+            let aim_dir = deadzoned(axis(AXIS_RIGHT_X), axis(AXIS_RIGHT_Y)).map(|(x, y)| {
+                let len = (x * x + y * y).sqrt();
+                (x / len, y / len)
+            });
+            let fire = unsafe { quad_gamepad_button(BUTTON_RIGHT_TRIGGER) } > TRIGGER_THRESHOLD;
+
+            PadInput {
+                move_dir,
+                aim_dir,
+                fire,
+            }
+        }
+
+        /// The debug overlay isn't built for wasm (egui is native-only), but keep
+        /// the surface so the module compiles under any feature combination.
+        #[cfg(feature = "debug")]
+        pub fn debug_diag(&self) -> super::PadDiag {
+            super::PadDiag {
+                initialized: unsafe { quad_gamepad_connected() } != 0,
+                pads: Vec::new(),
+            }
         }
     }
+
+    /// Exported so `mq_js_bundle.js`'s plugin version check matches the JS side
+    /// (`version: 1`) and stays silent. Kept by `#[unsafe(no_mangle)]`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn quad_gamepad_crate_version() -> u32 {
+        1
+    }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use web::Pads;
