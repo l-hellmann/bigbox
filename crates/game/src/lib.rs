@@ -187,9 +187,53 @@ pub struct Projectile {
     /// the player swaps weapons mid-flight.
     pub crit_chance: f32,
     pub crit_multiplier: f32,
+    /// Blast radius in tiles. `0.0` is an ordinary single-target shot (pistol /
+    /// SMG pellet); a positive value (rocket) makes the shot detonate on impact,
+    /// dealing `damage` to every enemy within the radius.
+    pub aoe_radius: f32,
     /// Seconds remaining before forced despawn.
     pub lifetime: f32,
 }
+
+/// How a weapon's shot manifests in the world — the archetype's *mechanical*
+/// identity, layered on top of the shared damage / fire-rate numbers. Derived
+/// from the weapon base at equip time (see [`fire_profile`]); the fire path
+/// branches on it. A purely game-layer concept: the loot sim still models a
+/// weapon as a single hit, so pellet/AoE behaviour here can shift real
+/// DPS-vs-armor away from the sim's numbers — retune there if it drifts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FireProfile {
+    /// One projectile straight along the aim vector (pistol, SMG, default).
+    Single,
+    /// `pellets` projectiles fanned across ±`spread` radians, each carrying an
+    /// equal split of the per-shot damage — a shotgun blast. Point-blank most
+    /// pellets land on one target (≈ full damage); at range they fan out and
+    /// can tag several enemies, so single-target falls off while crowd-clear
+    /// rises.
+    Spread { pellets: u32, spread: f32 },
+    /// One projectile at `speed_factor`× the shared projectile speed (a heavy,
+    /// readable lob) that detonates on impact, dealing full `damage` to every
+    /// enemy within `radius` tiles. No falloff in v1.
+    Explosive { radius: f32, speed_factor: f32 },
+}
+
+/// A transient blast marker for rendering a rocket detonation — position, the
+/// radius it covered, and a countdown. Ephemeral / client-side effect state
+/// (CLAUDE.md netcode posture): never replicated, replayed from the impact, so
+/// it sits alongside projectiles rather than in the persistent world tables.
+#[derive(Debug, Clone, Copy)]
+pub struct Explosion {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    /// Seconds left before the effect is culled.
+    pub ttl: f32,
+    /// Original lifetime, so the renderer can compute a 0..1 fade.
+    pub max_ttl: f32,
+}
+
+/// How long a rocket's blast ring stays on screen (seconds). Cosmetic only.
+pub const EXPLOSION_TTL: f32 = 0.35;
 
 /// The player's active weapon: the owned [`ItemInstance`] plus the combat
 /// [`Weapon`] it aggregates to, cached so the fire path never re-aggregates per
@@ -201,6 +245,10 @@ pub struct EquippedWeapon {
     pub item: ItemInstance,
     pub weapon: Weapon,
     pub name: String,
+    /// The weapon's mechanical fire pattern (single / spread / explosive),
+    /// resolved from the base at equip time so the fire path doesn't re-derive
+    /// it per shot.
+    pub profile: FireProfile,
 }
 
 /// A live enemy in the world. `archetype` indexes into [`Content::enemies`]
@@ -254,6 +302,9 @@ pub struct World {
     pub map: Map,
     pub player: Player,
     pub projectiles: Vec<Projectile>,
+    /// Transient rocket-blast markers for rendering. Ephemeral effect state, not
+    /// part of the persistent world (see [`Explosion`]); ticked down and culled.
+    pub explosions: Vec<Explosion>,
     pub enemies: Vec<EnemyInstance>,
     pub drops: Vec<LootDrop>,
     /// Items the player has walked over and picked up. No equip/stash UI yet —
@@ -314,6 +365,7 @@ impl World {
                 current_life: PLAYER_MAX_LIFE,
             },
             projectiles: Vec::new(),
+            explosions: Vec::new(),
             enemies: Vec::new(),
             drops: Vec::new(),
             inventory: Vec::new(),
@@ -387,6 +439,7 @@ impl World {
         self.equipped = Some(EquippedWeapon {
             name: base.name.clone(),
             weapon,
+            profile: fire_profile(&base.id),
             item,
         });
         true
@@ -458,20 +511,66 @@ impl World {
                 if len < 1e-6 {
                     return;
                 }
-                let (nx, ny) = (dx / len, dy / len);
-                self.projectiles.push(Projectile {
-                    x: self.player.x,
-                    y: self.player.y,
-                    vx: nx * self.tunables.projectile_speed,
-                    vy: ny * self.tunables.projectile_speed,
-                    damage: self.tunables.bullet_damage,
-                    crit_chance: self.tunables.crit_chance,
-                    crit_multiplier: self.tunables.crit_multiplier,
-                    lifetime: self.tunables.bullet_lifetime,
-                });
+                let (ax, ay) = (dx / len, dy / len);
+                let profile = self
+                    .equipped
+                    .as_ref()
+                    .map(|e| e.profile)
+                    .unwrap_or(FireProfile::Single);
+                self.spawn_shot(ax, ay, profile);
                 self.player_fire_cooldown = 1.0 / self.tunables.fire_rate;
             }
         }
+    }
+
+    /// Spawn the projectile(s) for one shot fired along unit aim `(ax, ay)`,
+    /// shaped by `profile`: a single bullet, a fanned pellet cone (damage split
+    /// across pellets), or a slow explosive lob. The shared damage / speed come
+    /// from the tunables (already weapon-derived via [`World::equip`]).
+    fn spawn_shot(&mut self, ax: f32, ay: f32, profile: FireProfile) {
+        let speed = self.tunables.projectile_speed;
+        let damage = self.tunables.bullet_damage;
+        match profile {
+            FireProfile::Single => self.push_projectile(ax, ay, speed, damage, 0.0),
+            FireProfile::Spread { pellets, spread } => {
+                let pellets = pellets.max(1);
+                let per = damage / pellets as f32;
+                for k in 0..pellets {
+                    // Evenly fan the pellets across [-spread, +spread]; a single
+                    // pellet fires straight ahead.
+                    let frac = if pellets == 1 {
+                        0.0
+                    } else {
+                        (k as f32 / (pellets - 1) as f32) * 2.0 - 1.0
+                    };
+                    let ang = frac * spread;
+                    let (c, s) = (ang.cos(), ang.sin());
+                    let (rx, ry) = (ax * c - ay * s, ax * s + ay * c);
+                    self.push_projectile(rx, ry, speed, per, 0.0);
+                }
+            }
+            FireProfile::Explosive {
+                radius,
+                speed_factor,
+            } => self.push_projectile(ax, ay, speed * speed_factor, damage, radius),
+        }
+    }
+
+    /// Push one projectile from the player travelling along unit dir `(dx, dy)`
+    /// at `speed`, with per-hit `damage` and `aoe_radius` (0 = single-target).
+    /// Crit and lifetime are snapshotted from the current tunables.
+    fn push_projectile(&mut self, dx: f32, dy: f32, speed: f32, damage: f32, aoe_radius: f32) {
+        self.projectiles.push(Projectile {
+            x: self.player.x,
+            y: self.player.y,
+            vx: dx * speed,
+            vy: dy * speed,
+            damage,
+            crit_chance: self.tunables.crit_chance,
+            crit_multiplier: self.tunables.crit_multiplier,
+            aoe_radius,
+            lifetime: self.tunables.bullet_lifetime,
+        });
     }
 
     /// Advance time-based state by `dt` seconds. Apply this **after** command
@@ -489,6 +588,7 @@ impl World {
 
         self.update_flow();
         self.resolve_projectiles(dt, content);
+        self.update_explosions(dt);
         self.move_enemies(dt);
         self.apply_contact_damage(dt);
         self.collect_pickups(content);
@@ -525,28 +625,21 @@ impl World {
             let ny = p.y + p.vy * dt;
 
             if let Some(ei) = self.enemy_at(nx, ny) {
-                let weapon = Weapon {
-                    damage_per_shot: p.damage,
-                    fire_rate: 0.0,
-                    crit_chance: p.crit_chance,
-                    crit_multiplier: p.crit_multiplier,
-                };
-                let mut rng = self.next_event_rng();
-                self.last_hit = Some(resolve_hit(
-                    &mut rng,
-                    &weapon,
-                    &mut self.enemies[ei].combatant,
-                ));
-                // Getting shot wakes a dormant enemy.
-                self.enemies[ei].awake = true;
-                self.projectiles.swap_remove(i);
-                if self.enemies[ei].combatant.current_life <= 0.0 {
-                    self.kill_enemy(ei, content);
+                if p.aoe_radius > 0.0 {
+                    self.resolve_explosion(nx, ny, &p, content);
+                } else {
+                    self.hit_enemy(ei, &p, content);
                 }
+                self.projectiles.swap_remove(i);
                 continue;
             }
 
             if !self.is_passable(nx, ny) {
+                // An explosive shot still detonates against the wall it hits, so
+                // a near-miss rocket catches enemies bunched against cover.
+                if p.aoe_radius > 0.0 {
+                    self.resolve_explosion(nx, ny, &p, content);
+                }
                 self.projectiles.swap_remove(i);
                 continue;
             }
@@ -557,6 +650,58 @@ impl World {
             slot.lifetime = new_life;
             i += 1;
         }
+    }
+
+    /// Apply a single shot to enemy `ei`: damage through `core::resolve_hit` (so
+    /// armor/dodge applies), wake it, and kill it if it dropped.
+    fn hit_enemy(&mut self, ei: usize, p: &Projectile, content: &Content) {
+        let weapon = projectile_weapon(p);
+        let mut rng = self.next_event_rng();
+        self.last_hit = Some(resolve_hit(&mut rng, &weapon, &mut self.enemies[ei].combatant));
+        self.enemies[ei].awake = true;
+        if self.enemies[ei].combatant.current_life <= 0.0 {
+            self.kill_enemy(ei, content);
+        }
+    }
+
+    /// Detonate an explosive shot at `(x, y)`: deal its full damage to every
+    /// enemy within `aoe_radius`, waking each and killing those that drop, then
+    /// drop a transient [`Explosion`] marker for the renderer. Each enemy rolls
+    /// its own hit (independent dodge/crit). `swap_remove` on a kill backfills
+    /// the slot, so a killed index is re-checked rather than skipped.
+    fn resolve_explosion(&mut self, x: f32, y: f32, p: &Projectile, content: &Content) {
+        let weapon = projectile_weapon(p);
+        let r2 = p.aoe_radius * p.aoe_radius;
+        let mut i = 0;
+        while i < self.enemies.len() {
+            let dx = self.enemies[i].x - x;
+            let dy = self.enemies[i].y - y;
+            if dx * dx + dy * dy <= r2 {
+                let mut rng = self.next_event_rng();
+                self.last_hit = Some(resolve_hit(&mut rng, &weapon, &mut self.enemies[i].combatant));
+                self.enemies[i].awake = true;
+                if self.enemies[i].combatant.current_life <= 0.0 {
+                    self.kill_enemy(i, content);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        self.explosions.push(Explosion {
+            x,
+            y,
+            radius: p.aoe_radius,
+            ttl: EXPLOSION_TTL,
+            max_ttl: EXPLOSION_TTL,
+        });
+    }
+
+    /// Age out transient explosion markers. Pure cosmetic bookkeeping.
+    fn update_explosions(&mut self, dt: f32) {
+        for e in &mut self.explosions {
+            e.ttl -= dt;
+        }
+        self.explosions.retain(|e| e.ttl > 0.0);
     }
 
     /// Index of the first enemy whose center is within `PROJECTILE_HIT_RADIUS`
@@ -960,6 +1105,39 @@ fn weapon_rank(weapon: &Weapon) -> f32 {
     dps_against(weapon, &Combatant::dummy(1.0))
 }
 
+/// Build the one-shot `Weapon` a projectile resolves its hit through. `fire_rate`
+/// is irrelevant here (the shot already happened) so it's zeroed; damage and
+/// crit ride on the projectile from fire time.
+fn projectile_weapon(p: &Projectile) -> Weapon {
+    Weapon {
+        damage_per_shot: p.damage,
+        fire_rate: 0.0,
+        crit_chance: p.crit_chance,
+        crit_multiplier: p.crit_multiplier,
+    }
+}
+
+/// The mechanical fire pattern for a weapon base, keyed by id (mirrors
+/// [`archetype_speed`]). The two heavy weapons get their signature behaviour;
+/// every rapid-fire or unknown base fires a single straight shot. Feel constants
+/// live here so they're tunable in one place.
+pub fn fire_profile(base_id: &str) -> FireProfile {
+    match base_id {
+        // Six pellets across a ~±16° fan: tight enough to focus point-blank,
+        // wide enough to sweep a cluster at range.
+        "shotgun" => FireProfile::Spread {
+            pellets: 6,
+            spread: 0.28,
+        },
+        // A slow, heavy lob with a 1.6-tile blast.
+        "rocket_launcher" => FireProfile::Explosive {
+            radius: 1.6,
+            speed_factor: 0.55,
+        },
+        _ => FireProfile::Single,
+    }
+}
+
 /// Per-archetype movement speed (tiles/sec), keyed by enemy `id`. All slower
 /// than `PLAYER_SPEED` (6.0) so the player can kite. Unknown ids fall back to
 /// the baseline zombie pace.
@@ -1079,14 +1257,18 @@ mod tests {
         }
     }
 
-    /// Content with three weapons spanning the DPS range plus one armor base:
-    /// pistol 48 dps, cannon 200 dps, peashooter 1 dps, helm (not a weapon).
+    /// Content spanning the DPS range plus the two real heavy bases (whose ids
+    /// drive their fire profiles) and one armor base: pistol 48 dps, cannon
+    /// 200 dps, peashooter 1 dps, shotgun (spread), rocket_launcher (explosive),
+    /// helm (not a weapon).
     fn weapon_content() -> Content {
         Content {
             bases: vec![
                 weapon_base("pistol", "Pistol", 12.0, 4.0),
                 weapon_base("cannon", "Cannon", 50.0, 4.0),
                 weapon_base("peashooter", "Peashooter", 1.0, 1.0),
+                weapon_base("shotgun", "Shotgun", 36.0, 1.0),
+                weapon_base("rocket_launcher", "Rocket Launcher", 80.0, 0.5),
                 armor_base("helm"),
             ],
             ..Content::empty()
@@ -1848,6 +2030,113 @@ mod tests {
         assert_eq!(w.tunables.bullet_damage, 50.0);
         assert!(!w.last_pickup.as_deref().unwrap().starts_with("equipped"));
         assert_eq!(w.inventory.len(), 1, "still collected");
+    }
+
+    // ---- archetypes: fire profiles ----
+
+    #[test]
+    fn pistol_fires_a_single_shot() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("pistol", &content);
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        assert_eq!(w.projectiles.len(), 1);
+        assert_eq!(w.projectiles[0].aoe_radius, 0.0);
+    }
+
+    #[test]
+    fn shotgun_fires_a_damage_split_pellet_spread() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("shotgun", &content);
+        let total = w.tunables.bullet_damage; // 36
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        // Six pellets, each a sixth of the damage, none explosive.
+        assert_eq!(w.projectiles.len(), 6);
+        for p in &w.projectiles {
+            assert!((p.damage - total / 6.0).abs() < 1e-3);
+            assert_eq!(p.aoe_radius, 0.0);
+        }
+        // The fan actually spreads: a horizontal shot gets some vertical pellets.
+        assert!(
+            w.projectiles.iter().any(|p| p.vy.abs() > 1e-3),
+            "pellets should fan out, not fire parallel"
+        );
+    }
+
+    #[test]
+    fn rocket_is_a_single_slow_explosive_shot() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("rocket_launcher", &content);
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        assert_eq!(w.projectiles.len(), 1);
+        let p = &w.projectiles[0];
+        assert!(p.aoe_radius > 0.0, "rocket carries a blast radius");
+        // speed_factor < 1 → slower than the raw projectile speed.
+        assert!(p.vx < w.tunables.projectile_speed);
+    }
+
+    #[test]
+    fn rocket_blast_damages_every_enemy_in_radius() {
+        let content = weapon_content();
+        let mut w = World::new(open_room(21, 21));
+        w.equip_base("rocket_launcher", &content);
+        // Two stationary enemies clustered to the +x side, both inside the blast.
+        let (ex, ey) = (w.player.x + 4.0, w.player.y);
+        for (k, off) in [0.0_f32, 0.8].into_iter().enumerate() {
+            w.enemies.push(EnemyInstance {
+                id: k as u64,
+                x: ex,
+                y: ey + off,
+                archetype: 0,
+                combatant: Combatant::dummy(1000.0),
+                speed: 0.0,
+                awake: true,
+            });
+        }
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        for _ in 0..40 {
+            w.tick(0.03, &content);
+            if w.projectiles.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            w.enemies.iter().all(|e| e.combatant.current_life < 1000.0),
+            "both enemies should be caught in one blast"
+        );
+        assert!(!w.explosions.is_empty(), "a blast marker should spawn");
+    }
+
+    #[test]
+    fn rocket_detonates_against_a_wall() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("rocket_launcher", &content);
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        for _ in 0..30 {
+            w.tick(0.02, &content);
+            if w.projectiles.is_empty() {
+                break;
+            }
+        }
+        assert!(w.projectiles.is_empty(), "rocket consumed on the wall");
+        assert!(!w.explosions.is_empty(), "wall impact still detonates");
+    }
+
+    #[test]
+    fn explosion_markers_age_out() {
+        let mut w = World::new(single_floor_map());
+        w.explosions.push(Explosion {
+            x: 1.5,
+            y: 1.5,
+            radius: 1.5,
+            ttl: EXPLOSION_TTL,
+            max_ttl: EXPLOSION_TTL,
+        });
+        w.tick(EXPLOSION_TTL + 0.05, &Content::empty());
+        assert!(w.explosions.is_empty(), "expired blast markers are culled");
     }
 
     #[test]

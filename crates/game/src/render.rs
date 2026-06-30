@@ -10,7 +10,7 @@
 
 use h2b_core::progression::level_for_total_xp;
 use h2b_core::Rarity;
-use h2b_game::{Content, EnemyInstance, LootDrop, Projectile, World};
+use h2b_game::{Content, EnemyInstance, Explosion, FireProfile, LootDrop, Projectile, World};
 use h2b_procgen::Tile;
 use macroquad::prelude::*;
 
@@ -85,6 +85,11 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
     // Projectiles: small glowing cubes floating at mid-height.
     for p in &world.projectiles {
         draw_projectile(p);
+    }
+
+    // Rocket blasts: expanding, fading rings on the ground.
+    for e in &world.explosions {
+        draw_explosion(e);
     }
 
     // Aim: a line from the player along the ground to the cursor hit, plus a
@@ -348,8 +353,27 @@ fn rarity_color(r: Rarity) -> Color {
 
 fn draw_projectile(p: &Projectile) {
     let c = vec3(p.x, 0.5, p.y);
-    let s = vec3(0.22, 0.22, 0.22);
-    draw_cube(c, s, None, Color::new(1.0, 0.9, 0.4, 1.0));
+    if p.aoe_radius > 0.0 {
+        // Rocket: a chunkier, hotter round so the heavy shot reads at a glance.
+        let s = vec3(0.38, 0.38, 0.38);
+        draw_cube(c, s, None, Color::new(1.0, 0.5, 0.2, 1.0));
+        draw_cube_wires(c, s, Color::new(1.0, 0.85, 0.45, 1.0));
+    } else {
+        let s = vec3(0.22, 0.22, 0.22);
+        draw_cube(c, s, None, Color::new(1.0, 0.9, 0.4, 1.0));
+    }
+}
+
+/// A rocket detonation: a sphere that swells from the impact and fades over the
+/// marker's lifetime, sized to the actual blast radius so the player learns its
+/// reach.
+fn draw_explosion(e: &Explosion) {
+    let frac = (e.ttl / e.max_ttl).clamp(0.0, 1.0); // 1 at impact → 0 at cull
+    let progress = 1.0 - frac; // 0 → 1 over the effect's life
+    let r = e.radius * (0.35 + 0.65 * progress);
+    let c = vec3(e.x, 0.4, e.y);
+    draw_sphere(c, r, None, Color::new(1.0, 0.55, 0.15, 0.30 * frac));
+    draw_sphere_wires(c, r, None, Color::new(1.0, 0.8, 0.3, 0.85 * frac));
 }
 
 /// 2D overlay: health bar, run stats, and the dead screen.
@@ -383,9 +407,14 @@ pub fn draw_hud(world: &World) {
     draw_text(&stats, 12.0, 56.0, 22.0, Color::new(0.85, 0.85, 0.85, 1.0));
 
     if let Some(eq) = &world.equipped {
+        let tag = match eq.profile {
+            FireProfile::Spread { pellets, .. } => format!("   {pellets}-pellet spread"),
+            FireProfile::Explosive { radius, .. } => format!("   blast r{radius:.1}"),
+            FireProfile::Single => String::new(),
+        };
         draw_text(
             &format!(
-                "weapon: {}   dmg {:.0}   rate {:.1}/s",
+                "weapon: {}   dmg {:.0}   rate {:.1}/s{tag}",
                 eq.name, eq.weapon.damage_per_shot, eq.weapon.fire_rate
             ),
             12.0,
