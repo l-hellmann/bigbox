@@ -22,6 +22,10 @@ use macroquad::prelude::*;
 /// hand, and check into a presets folder.
 const TUNABLES_PATH: &str = "head2box-tunables.ron";
 
+/// Accent used for the flat-section headers — the visual marker that a section
+/// is pinned/always-on rather than folded behind a triangle.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x7a, 0xc8);
+
 pub struct DebugUi {
     visible: bool,
     archetype: usize,
@@ -182,68 +186,148 @@ impl DebugUi {
         cursor_tile: Option<(f32, f32)>,
         pad_diag: &crate::PadDiag,
     ) {
-        controller_section(ui, pad_diag);
+        // Pinned at the very top: god mode is toggled constantly while testing,
+        // so it never hides inside a fold.
+        ui.add_space(2.0);
+        ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
 
-        ui.collapsing("level / map", |ui| {
-            ui.checkbox(&mut self.arena_pillars, "arena pillars (pathing obstacles)");
-            ui.horizontal(|ui| {
-                if ui.button("load arena").clicked() {
-                    let map = generate_arena(&ArenaParams {
-                        pillars: self.arena_pillars,
-                        ..Default::default()
-                    });
-                    reload_world(world, map);
-                    // Controlled-testing level: suspend waves, spawn by hand.
-                    world.tunables.auto_spawn = false;
-                }
-                if ui.button("load BSP").clicked() {
-                    let map = generate_bsp(&MapParams {
-                        seed: 42,
-                        ..Default::default()
-                    });
-                    reload_world(world, map);
+        // Flat, always-on sections — the controls touched every session.
+        self.loadout_section(ui, world, content);
+        self.spawning_section(ui, world, content, cursor_tile);
+
+        // Folded, set-and-forget sections (collapsed by default).
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("movement / pathing")
+            .show(ui, |ui| Self::movement_body(ui, world));
+        egui::CollapsingHeader::new("level / map")
+            .show(ui, |ui| self.level_body(ui, world));
+        controller_section(ui, pad_diag);
+        egui::CollapsingHeader::new("world actions")
+            .show(ui, |ui| Self::actions_body(ui, world));
+        egui::CollapsingHeader::new("tunables file")
+            .show(ui, |ui| self.file_body(ui, world));
+
+        Self::stats_footer(ui, world);
+    }
+
+    /// Flat: weapon picker + combat sliders + live TTK as one block. Equipping a
+    /// weapon loads its stats into these very sliders, and the readout reflects
+    /// them against the manual-spawn archetype — equip, tune, watch TTK move.
+    fn loadout_section(&mut self, ui: &mut egui::Ui, world: &mut World, content: &Content) {
+        flat_header(ui, "Weapon & Combat", "loadout · feel");
+
+        // Weapon picker — weapon-slot bases only.
+        let weapons: Vec<usize> = content
+            .bases
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.slot == "weapon")
+            .map(|(i, _)| i)
+            .collect();
+        if !weapons.contains(&self.weapon_base) {
+            self.weapon_base = weapons.first().copied().unwrap_or(0);
+        }
+        let current_weapon = content
+            .bases
+            .get(self.weapon_base)
+            .map(|b| b.name.as_str())
+            .unwrap_or("—");
+        egui::ComboBox::from_label("weapon")
+            .selected_text(current_weapon)
+            .show_ui(ui, |ui| {
+                for &i in &weapons {
+                    ui.selectable_value(&mut self.weapon_base, i, content.bases[i].name.as_str());
                 }
             });
-            ui.checkbox(&mut self.show_flow, "show flow field (enemy pathing)");
-            ui.checkbox(&mut self.show_entity_stats, "show entity stats (floating)");
-        });
+        if ui.button("equip selected · load stats → sliders").clicked()
+            && let Some(base) = content.bases.get(self.weapon_base)
+        {
+            let w = weapon_from_base(base);
+            world.tunables.bullet_damage = w.damage_per_shot;
+            if w.fire_rate > 0.0 {
+                world.tunables.fire_rate = w.fire_rate;
+            }
+            world.tunables.crit_chance = w.crit_chance;
+            world.tunables.crit_multiplier = w.crit_multiplier;
+        }
 
-        ui.collapsing("combat", |ui| {
-            let t = &mut world.tunables;
-            ui.add(egui::Slider::new(&mut t.bullet_damage, 0.0..=200.0).text("bullet dmg"));
-            ui.add(egui::Slider::new(&mut t.fire_rate, 0.5..=30.0).text("fire rate /s"));
-            ui.add(egui::Slider::new(&mut t.projectile_speed, 4.0..=80.0).text("proj speed"));
-            ui.add(egui::Slider::new(&mut t.bullet_lifetime, 0.2..=5.0).text("bullet life s"));
-            ui.add(egui::Slider::new(&mut t.crit_chance, 0.0..=1.0).text("crit chance"));
-            ui.add(egui::Slider::new(&mut t.crit_multiplier, 1.0..=5.0).text("crit mult"));
-            ui.add(egui::Slider::new(&mut t.contact_dps, 0.0..=100.0).text("contact dps"));
-        });
+        ui.add_space(4.0);
+        let t = &mut world.tunables;
+        ui.add(egui::Slider::new(&mut t.bullet_damage, 0.0..=200.0).text("bullet dmg"));
+        ui.add(egui::Slider::new(&mut t.fire_rate, 0.5..=30.0).text("fire rate /s"));
+        ui.add(egui::Slider::new(&mut t.projectile_speed, 4.0..=80.0).text("proj speed"));
+        ui.add(egui::Slider::new(&mut t.bullet_lifetime, 0.2..=5.0).text("bullet life s"));
+        ui.add(egui::Slider::new(&mut t.crit_chance, 0.0..=1.0).text("crit chance"));
+        ui.add(egui::Slider::new(&mut t.crit_multiplier, 1.0..=5.0).text("crit mult"));
+        ui.add(egui::Slider::new(&mut t.contact_dps, 0.0..=100.0).text("contact dps"));
 
-        ui.collapsing("movement / pathing", |ui| {
-            let t = &mut world.tunables;
-            ui.add(egui::Slider::new(&mut t.player_speed, 1.0..=20.0).text("player speed"));
-            ui.add(egui::Slider::new(&mut t.enemy_speed_mult, 0.0..=4.0).text("enemy speed ×"));
-            ui.add(egui::Slider::new(&mut t.sight_range, 0.0..=40.0).text("sight range (aggro)"));
-            ui.add(egui::Slider::new(&mut t.los_range, 0.0..=40.0).text("LOS beeline range"));
-            ui.add(egui::Slider::new(&mut t.separation_weight, 0.0..=5.0).text("separation weight"));
-            ui.add(egui::Slider::new(&mut t.separation_radius, 0.0..=3.0).text("separation radius"));
-            ui.add(egui::Slider::new(&mut t.stick_deadzone, 0.0..=0.6).text("stick deadzone"));
-        });
+        // Live expected DPS/TTK of the current tunables weapon against the
+        // selected archetype — the same expected-value lens the sim reports.
+        let weapon = Weapon {
+            damage_per_shot: world.tunables.bullet_damage,
+            fire_rate: world.tunables.fire_rate,
+            crit_chance: world.tunables.crit_chance,
+            crit_multiplier: world.tunables.crit_multiplier,
+        };
+        if let Some(enemy) = content.enemies.get(self.archetype) {
+            let target = enemy.as_combatant();
+            let dps = dps_against(&weapon, &target);
+            let ttk = time_to_kill(&weapon, &target)
+                .map(|s| format!("{s:.2}s"))
+                .unwrap_or_else(|| "∞".to_string());
+            egui::Frame::default()
+                .fill(egui::Color32::from_rgb(0x1c, 0x21, 0x28))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2c, 0x3b, 0x4c)))
+                .inner_margin(egui::Margin { left: 10, right: 10, top: 7, bottom: 7 })
+                .outer_margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 2 })
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "vs {} · life {:.0}, armor {:.0}, eva {:.0}",
+                            enemy.id, target.current_life, target.armor, target.evasion
+                        ))
+                        .weak()
+                        .size(11.5),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("expected dps");
+                        ui.label(
+                            egui::RichText::new(format!("{dps:.1}"))
+                                .strong()
+                                .color(egui::Color32::from_rgb(0x84, 0xd1, 0x8a)),
+                        );
+                        ui.label("·  ttk");
+                        ui.label(
+                            egui::RichText::new(ttk)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0xe3, 0xc7, 0x5a)),
+                        );
+                    });
+                });
+        }
+    }
 
-        ui.collapsing("spawning / loot", |ui| {
-            let t = &mut world.tunables;
-            ui.checkbox(&mut t.auto_spawn, "auto-spawn waves");
-            ui.add(egui::Slider::new(&mut t.spawn_interval, 0.2..=15.0).text("interval s"));
-            ui.add(egui::Slider::new(&mut t.spawn_batch, 1..=20).text("batch"));
-            ui.add(egui::Slider::new(&mut t.max_enemies, 1..=200).text("max enemies"));
-            ui.add(egui::Slider::new(&mut t.spawn_min_distance, 1..=40).text("min distance"));
-            ui.add(egui::Slider::new(&mut t.drop_chance, 0.0..=1.0).text("drop chance"));
-        });
+    /// Flat: auto-wave cadence and manual spawning together — the same job. The
+    /// archetype chosen here also drives the TTK readout in the loadout section.
+    fn spawning_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        world: &mut World,
+        content: &Content,
+        cursor_tile: Option<(f32, f32)>,
+    ) {
+        flat_header(ui, "Spawning", "auto · manual");
 
-        ui.checkbox(&mut world.tunables.god_mode, "god mode (no contact damage)");
+        let t = &mut world.tunables;
+        ui.checkbox(&mut t.auto_spawn, "auto-spawn waves");
+        ui.add(egui::Slider::new(&mut t.spawn_interval, 0.2..=15.0).text("interval s"));
+        ui.add(egui::Slider::new(&mut t.spawn_batch, 1..=20).text("batch"));
+        ui.add(egui::Slider::new(&mut t.max_enemies, 1..=200).text("max enemies"));
+        ui.add(egui::Slider::new(&mut t.spawn_min_distance, 1..=40).text("min distance"));
+        ui.add(egui::Slider::new(&mut t.drop_chance, 0.0..=1.0).text("drop chance"));
 
-        ui.separator();
-        ui.strong("manual spawn");
+        subhead(ui, "manual");
         let current = content
             .enemies
             .get(self.archetype)
@@ -285,66 +369,47 @@ impl DebugUi {
                 world.debug_wake_all();
             }
         });
+    }
 
-        ui.separator();
-        ui.strong("weapon / TTK");
-        // Weapon picker — weapon-slot bases only.
-        let weapons: Vec<usize> = content
-            .bases
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.slot == "weapon")
-            .map(|(i, _)| i)
-            .collect();
-        if !weapons.contains(&self.weapon_base) {
-            self.weapon_base = weapons.first().copied().unwrap_or(0);
-        }
-        let current_weapon = content
-            .bases
-            .get(self.weapon_base)
-            .map(|b| b.name.as_str())
-            .unwrap_or("—");
-        egui::ComboBox::from_label("weapon")
-            .selected_text(current_weapon)
-            .show_ui(ui, |ui| {
-                for &i in &weapons {
-                    ui.selectable_value(&mut self.weapon_base, i, content.bases[i].name.as_str());
-                }
-            });
-        if ui.button("equip selected (load stats → tunables)").clicked()
-            && let Some(base) = content.bases.get(self.weapon_base)
-        {
-            let w = weapon_from_base(base);
-            world.tunables.bullet_damage = w.damage_per_shot;
-            if w.fire_rate > 0.0 {
-                world.tunables.fire_rate = w.fire_rate;
+    /// Folded: arena/BSP map swaps and the renderer debug-viz toggles.
+    fn level_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
+        ui.checkbox(&mut self.arena_pillars, "arena pillars (pathing obstacles)");
+        ui.horizontal(|ui| {
+            if ui.button("load arena").clicked() {
+                let map = generate_arena(&ArenaParams {
+                    pillars: self.arena_pillars,
+                    ..Default::default()
+                });
+                reload_world(world, map);
+                // Controlled-testing level: suspend waves, spawn by hand.
+                world.tunables.auto_spawn = false;
             }
-            world.tunables.crit_chance = w.crit_chance;
-            world.tunables.crit_multiplier = w.crit_multiplier;
-        }
-        // Live expected TTK/DPS of the *current* tunables weapon against the
-        // enemy archetype selected above — the core expected-value lens, the
-        // same numbers the sim reports. Retune the sliders and watch it move.
-        let weapon = Weapon {
-            damage_per_shot: world.tunables.bullet_damage,
-            fire_rate: world.tunables.fire_rate,
-            crit_chance: world.tunables.crit_chance,
-            crit_multiplier: world.tunables.crit_multiplier,
-        };
-        if let Some(enemy) = content.enemies.get(self.archetype) {
-            let target = enemy.as_combatant();
-            let dps = dps_against(&weapon, &target);
-            let ttk = time_to_kill(&weapon, &target)
-                .map(|s| format!("{s:.2}s"))
-                .unwrap_or_else(|| "∞".to_string());
-            ui.label(format!(
-                "vs {} (life {:.0}, armor {:.0}, eva {:.0}):",
-                enemy.id, target.current_life, target.armor, target.evasion
-            ));
-            ui.label(format!("  expected dps {dps:.1}   ttk {ttk}"));
-        }
+            if ui.button("load BSP").clicked() {
+                let map = generate_bsp(&MapParams {
+                    seed: 42,
+                    ..Default::default()
+                });
+                reload_world(world, map);
+            }
+        });
+        ui.checkbox(&mut self.show_flow, "show flow field (enemy pathing)");
+        ui.checkbox(&mut self.show_entity_stats, "show entity stats (floating)");
+    }
 
-        ui.separator();
+    /// Folded: movement / pathing tunables.
+    fn movement_body(ui: &mut egui::Ui, world: &mut World) {
+        let t = &mut world.tunables;
+        ui.add(egui::Slider::new(&mut t.player_speed, 1.0..=20.0).text("player speed"));
+        ui.add(egui::Slider::new(&mut t.enemy_speed_mult, 0.0..=4.0).text("enemy speed ×"));
+        ui.add(egui::Slider::new(&mut t.sight_range, 0.0..=40.0).text("sight range (aggro)"));
+        ui.add(egui::Slider::new(&mut t.los_range, 0.0..=40.0).text("LOS beeline range"));
+        ui.add(egui::Slider::new(&mut t.separation_weight, 0.0..=5.0).text("separation weight"));
+        ui.add(egui::Slider::new(&mut t.separation_radius, 0.0..=3.0).text("separation radius"));
+        ui.add(egui::Slider::new(&mut t.stick_deadzone, 0.0..=0.6).text("stick deadzone"));
+    }
+
+    /// Folded: one-shot world actions.
+    fn actions_body(ui: &mut egui::Ui, world: &mut World) {
         ui.horizontal(|ui| {
             if ui.button("revive / heal").clicked() {
                 world.debug_revive();
@@ -356,9 +421,10 @@ impl DebugUi {
                 world.tunables = Tunables::default();
             }
         });
+    }
 
-        ui.separator();
-        ui.strong("tunables file");
+    /// Folded: export / import the tunables preset file.
+    fn file_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
         ui.horizontal(|ui| {
             if ui.button("export").clicked() {
                 self.status = match export(&world.tunables) {
@@ -379,7 +445,11 @@ impl DebugUi {
         if !self.status.is_empty() {
             ui.label(&self.status);
         }
+    }
 
+    /// Always-visible footer: live counts and the last per-shot hit readout.
+    fn stats_footer(ui: &mut egui::Ui, world: &World) {
+        ui.add_space(6.0);
         ui.separator();
         ui.label(format!("fps {}", get_fps()));
         ui.label(format!(
@@ -404,12 +474,43 @@ impl DebugUi {
     }
 }
 
+/// Header for a pinned flat section: an accent bar + uppercase title, with an
+/// optional right-aligned hint. The visual counterpart to a `CollapsingHeader`'s
+/// triangle — "always-on, primary" vs. "folded, secondary".
+fn flat_header(ui: &mut egui::Ui, title: &str, hint: &str) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 15.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 2.0, ACCENT);
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .strong()
+                .size(12.5)
+                .color(egui::Color32::from_gray(238)),
+        );
+        if !hint.is_empty() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(hint).weak().size(11.0));
+            });
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// A minor divider label inside a section (e.g. "manual" within Spawning).
+fn subhead(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(text.to_uppercase()).weak().size(10.5));
+    ui.add_space(1.0);
+}
+
 /// Live controller diagnostics — surfaces whether gilrs sees a pad, its SDL
 /// mapping (the usual "connected but dead" culprit when missing), and live
 /// stick/trigger/button state so you can confirm inputs are reaching the game.
 fn controller_section(ui: &mut egui::Ui, diag: &crate::PadDiag) {
     egui::CollapsingHeader::new("controller")
-        .default_open(true)
+        .default_open(false)
         .show(ui, |ui| {
             if !diag.initialized {
                 ui.colored_label(egui::Color32::RED, "gilrs failed to initialize");
