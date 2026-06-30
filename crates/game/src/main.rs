@@ -388,15 +388,25 @@ async fn main() {
         let mouse_moved =
             (mouse_pos.0 - prev_mouse.0).abs() > 1.0 || (mouse_pos.1 - prev_mouse.1).abs() > 1.0;
         prev_mouse = mouse_pos;
-        if pad.aim_dir.is_some() {
+
+        // Active controller input (aiming or moving) claims the aim source over
+        // the mouse; the mouse only reclaims it on real movement.
+        if pad.aim_dir.is_some() || pad.move_dir.is_some() {
             aim_source = AimSource::Pad;
-            held_aim = pad.aim_dir;
         } else if mouse_moved {
             aim_source = AimSource::Mouse;
         }
 
         let aim = match aim_source {
-            AimSource::Pad => pad.aim_dir.or(held_aim),
+            AimSource::Pad => {
+                // Right stick aims; otherwise face the movement direction;
+                // otherwise hold the last heading.
+                let active = pad.aim_dir.or_else(|| pad.move_dir.map(normalize));
+                if active.is_some() {
+                    held_aim = active;
+                }
+                active.or(held_aim)
+            }
             AimSource::Mouse => aim_direction(&world.player, mouse_hit),
         };
         // Aim marker (3D crosshair): a point ahead of the player when aiming on
@@ -500,6 +510,16 @@ fn ground_hit(cam: &Camera3D) -> Option<Vec3> {
         return None;
     }
     Some(cam.position + dir * t)
+}
+
+/// Normalize a 2D vector, or `(0, 0)` if it's degenerate.
+fn normalize((x, y): (f32, f32)) -> (f32, f32) {
+    let len = (x * x + y * y).sqrt();
+    if len > 1e-6 {
+        (x / len, y / len)
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 /// Ground hit point → normalized aim direction in **tile-space** relative to
