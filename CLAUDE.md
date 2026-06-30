@@ -89,7 +89,9 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
                      debug overlay behind `--features debug` (runtime Tunables).
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
 /web              ✅ wasm build: index.html + macroquad JS loader, built via
-                     `make web` (keyboard/mouse; no gamepad/debug overlay — see README)
+                     `make web`. Run config (seed/level) from the URL query
+                     (`?seed=123&level=arena`, via quad-url). Keyboard/mouse;
+                     no gamepad/debug overlay — see README
 ```
 
 Keep `core` free of rendering and IO dependencies. It must compile and run in a headless test or CLI sim without dragging in macroquad. This is the single most important architectural rule — it's what makes the loot simulator possible and what keeps unit tests fast.

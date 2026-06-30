@@ -686,6 +686,7 @@ dependencies = [
  "head2box-core",
  "head2box-procgen",
  "macroquad",
+ "quad-url",
  "rand",
  "ron",
  "serde",

@@ -49,7 +49,9 @@ const CAMERA_HEIGHT: f32 = 15.0;
 /// looks down-and-forward at the player from here.
 const CAMERA_BACK: f32 = 10.0;
 
-/// Map seed from `H2B_SEED`, if set and parseable.
+/// Map seed from `H2B_SEED`, if set and parseable. Native only — the web build
+/// reads the seed from the URL instead (see `resolve_run`).
+#[cfg(not(target_arch = "wasm32"))]
 fn map_seed_env() -> Option<u64> {
     std::env::var("H2B_SEED").ok().and_then(|s| s.parse().ok())
 }
@@ -95,6 +97,18 @@ enum Level {
     ArenaEmpty,
 }
 
+/// Parse a level name (the `arena` / `arena-empty` tokens shared by `H2B_LEVEL`
+/// and the web `?level=` query). Anything else → the BSP dungeon. Non-debug
+/// builds only — the debug build takes the level through clap's `LevelArg`.
+#[cfg(not(feature = "debug"))]
+fn level_from_str(s: &str) -> Level {
+    match s {
+        "arena" => Level::Arena,
+        "arena-empty" => Level::ArenaEmpty,
+        _ => Level::Bsp,
+    }
+}
+
 /// CLI surface for local dev — only compiled under the `debug` feature, so the
 /// prod/wasm build pulls in no clap. The `cargo arena` / `arena-empty` / `dbg`
 /// aliases drive this; everything has an env-var or default fallback so a bare
@@ -131,8 +145,8 @@ impl From<LevelArg> for Level {
 }
 
 /// Resolve `(level, seed)` for this run. Debug builds parse the CLI via clap;
-/// non-debug (prod/wasm) builds read the `H2B_LEVEL` / `H2B_SEED` env vars only,
-/// with no arg parser linked in.
+/// non-debug native reads `H2B_LEVEL` / `H2B_SEED`; web reads `?level=&seed=`
+/// from the page URL. Each path falls back to the BSP dungeon at seed 42.
 #[cfg(feature = "debug")]
 fn resolve_run() -> (Level, u64) {
     use clap::Parser;
@@ -140,14 +154,29 @@ fn resolve_run() -> (Level, u64) {
     (cli.level.into(), cli.seed.or_else(map_seed_env).unwrap_or(42))
 }
 
-#[cfg(not(feature = "debug"))]
+#[cfg(all(not(feature = "debug"), not(target_arch = "wasm32")))]
 fn resolve_run() -> (Level, u64) {
-    let level = match std::env::var("H2B_LEVEL").as_deref() {
-        Ok("arena") => Level::Arena,
-        Ok("arena-empty") => Level::ArenaEmpty,
-        _ => Level::Bsp,
-    };
+    let level = std::env::var("H2B_LEVEL")
+        .map(|s| level_from_str(&s))
+        .unwrap_or(Level::Bsp);
     (level, map_seed_env().unwrap_or(42))
+}
+
+/// Web: read run config from the page URL query string via quad-url, so a URL
+/// like `index.html?seed=123&level=arena` reproduces an exact run. quad-url maps
+/// `?seed=123` to the arg `--seed=123`, which `easy_parse` splits back out.
+#[cfg(all(not(feature = "debug"), target_arch = "wasm32"))]
+fn resolve_run() -> (Level, u64) {
+    let mut level = Level::Bsp;
+    let mut seed = None;
+    for param in quad_url::get_program_parameters() {
+        match quad_url::easy_parse(&param) {
+            Some(("seed", Some(v))) => seed = v.parse().ok(),
+            Some(("level", Some(v))) => level = level_from_str(v),
+            _ => {}
+        }
+    }
+    (level, seed.unwrap_or(42))
 }
 
 fn build_map(level: Level, seed: u64) -> Map {

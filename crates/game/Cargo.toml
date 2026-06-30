@@ -48,3 +48,7 @@ debug = ["dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]
 # wasm-bindgen footprint. Feature-unification applies it to the transitive copy.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["custom"] }
+# Read run config (seed/level) from the page URL query string on web, so a URL
+# reproduces an exact run. Uses miniquad's sapp-jsutils JS bridge — no
+# wasm-bindgen. Needs `quad-url.js` included in index.html.
+quad-url = "0.1"
