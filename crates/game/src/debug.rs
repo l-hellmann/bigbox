@@ -10,9 +10,7 @@
 //! ```
 
 use egui_macroquad::egui;
-use h2b_core::{
-    BaseItem, HitResult, ItemInstance, Rarity, Weapon, aggregate_item, dps_against, time_to_kill,
-};
+use h2b_core::{HitResult, Weapon, dps_against, time_to_kill};
 use h2b_game::{Content, Tunables, World};
 use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
@@ -239,16 +237,13 @@ impl DebugUi {
                     ui.selectable_value(&mut self.weapon_base, i, content.bases[i].name.as_str());
                 }
             });
-        if ui.button("equip selected · load stats → sliders").clicked()
+        if ui.button("equip selected · arm the player").clicked()
             && let Some(base) = content.bases.get(self.weapon_base)
         {
-            let w = weapon_from_base(base);
-            world.tunables.bullet_damage = w.damage_per_shot;
-            if w.fire_rate > 0.0 {
-                world.tunables.fire_rate = w.fire_rate;
-            }
-            world.tunables.crit_chance = w.crit_chance;
-            world.tunables.crit_multiplier = w.crit_multiplier;
+            // Routes through the real loadout path: sets `world.equipped` and
+            // loads the weapon's stats into these very sliders (the fire path's
+            // read surface), so equip → tune → watch TTK move still works.
+            world.equip_base(&base.id, content);
         }
 
         ui.add_space(4.0);
@@ -577,25 +572,6 @@ fn reload_world(world: &mut World, map: Map) {
     let saved = world.tunables;
     *world = World::new(map);
     world.tunables = saved;
-}
-
-/// Build a combat [`Weapon`] from a weapon base's intrinsic stats — a tier-0,
-/// zero-affix, no-attachment instance run through the canonical
-/// `aggregate_item` → `Weapon::from_stats` path (same as the sim), so the
-/// debug numbers match the balance tool's.
-fn weapon_from_base(base: &BaseItem) -> Weapon {
-    let item = ItemInstance {
-        base: base.id.clone(),
-        ilvl: 1,
-        rarity: Rarity::Basic,
-        seed: 0,
-        prefixes: vec![],
-        suffixes: vec![],
-        upgrade_tier: 0,
-        attached: vec![],
-    };
-    let stats = aggregate_item(&item, base, &[], &[]);
-    Weapon::from_stats(&stats)
 }
 
 /// Write the current tunables to [`TUNABLES_PATH`] as pretty RON (the project's

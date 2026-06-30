@@ -23,7 +23,8 @@
 
 use h2b_core::roll::roll_item;
 use h2b_core::{
-    Affix, BaseItem, Combatant, Enemy, HitResult, ItemInstance, Rarity, Weapon, resolve_hit,
+    Affix, BaseItem, Combatant, Enemy, HitResult, ItemInstance, Rarity, Weapon, aggregate_item,
+    dps_against, resolve_hit,
 };
 use h2b_procgen::{FlowField, Map, Tile, pick_spawn_points};
 use rand::rngs::StdRng;
@@ -31,10 +32,12 @@ use rand::{Rng, SeedableRng};
 
 // ---------- tunables ----------
 //
-// Hardcoded for v1 — the weapon-derived ones (speed, fire rate, damage) come
-// from the equipped item's aggregated stats once loot is wired into the
-// player loadout. Encoded as constants for now so the values are visible and
-// adjustable in one place.
+// These constants are the *default* feel values. The weapon-derived ones (fire
+// rate, damage, crit) are overwritten at runtime by [`World::equip`] from the
+// equipped item's aggregated stats — the player is armed with a pistol at setup
+// and re-equips on a better weapon pickup. The consts stay as the visible,
+// single-place defaults (and what headless tests run on, since a stock pistol
+// matches them).
 
 /// Player movement speed in tiles per second.
 pub const PLAYER_SPEED: f32 = 6.0;
@@ -188,6 +191,18 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
+/// The player's active weapon: the owned [`ItemInstance`] plus the combat
+/// [`Weapon`] it aggregates to, cached so the fire path never re-aggregates per
+/// frame (CLAUDE.md: recompute on equipment change, never per frame). The cached
+/// `weapon` is also the reference for upgrade comparisons on pickup; `name` is
+/// the base's display name for the HUD.
+#[derive(Debug, Clone)]
+pub struct EquippedWeapon {
+    pub item: ItemInstance,
+    pub weapon: Weapon,
+    pub name: String,
+}
+
 /// A live enemy in the world. `archetype` indexes into [`Content::enemies`]
 /// for the static profile (name, xp, ilvl); the mutable combat state lives in
 /// `combatant`. `id` is stable for the entity's lifetime.
@@ -244,6 +259,13 @@ pub struct World {
     /// Items the player has walked over and picked up. No equip/stash UI yet —
     /// pickups just accumulate here so the loot loop is observable.
     pub inventory: Vec<ItemInstance>,
+    /// The weapon currently driving the fire path. [`World::equip`] is the only
+    /// writer: it aggregates the item and pushes the derived damage / fire rate
+    /// / crit into [`Tunables`] (the fire path's single read surface), so the
+    /// shot output *is* the equipped gear. `None` until something equips — the
+    /// runtime arms a starting pistol at setup, while headless tests run on the
+    /// default tunables (which match a stock pistol) without equipping.
+    pub equipped: Option<EquippedWeapon>,
     /// Seconds until the player's next shot becomes available.
     pub player_fire_cooldown: f32,
     pub kills: u32,
@@ -295,6 +317,7 @@ impl World {
             enemies: Vec::new(),
             drops: Vec::new(),
             inventory: Vec::new(),
+            equipped: None,
             player_fire_cooldown: 0.0,
             kills: 0,
             xp: 0,
@@ -330,6 +353,63 @@ impl World {
         let id = self.next_entity_id;
         self.next_entity_id += 1;
         id
+    }
+
+    /// Equip `item` as the active weapon. Runs it through the canonical
+    /// `aggregate_item → Weapon::from_stats` path (the same numbers the loot
+    /// sim reports) and routes the derived damage / fire rate / crit into
+    /// [`Tunables`] — the fire path's single read surface — then records it as
+    /// [`World::equipped`] for the HUD and upgrade comparisons. This is the one
+    /// seam from owned gear to live combat output; re-call it after any change
+    /// to the item (upgrade tier, attachment) to refresh.
+    ///
+    /// Returns `false` and changes nothing for a non-weapon base or an unknown
+    /// base id, so an armor pickup can never clobber the gun.
+    pub fn equip(&mut self, item: ItemInstance, content: &Content) -> bool {
+        let Some(base) = content.bases.iter().find(|b| b.id == item.base) else {
+            return false;
+        };
+        if base.slot != "weapon" {
+            return false;
+        }
+        // v1 drops never roll attachments, so the attachment pool is empty;
+        // rolled affixes resolve against the loaded content templates.
+        let stats = aggregate_item(&item, base, &content.affixes, &[]);
+        let weapon = Weapon::from_stats(&stats);
+        self.tunables.bullet_damage = weapon.damage_per_shot;
+        // A weapon should always define a positive fire rate, but guard against
+        // a malformed base zeroing the cooldown (1 / 0 → instant infinite fire).
+        if weapon.fire_rate > 0.0 {
+            self.tunables.fire_rate = weapon.fire_rate;
+        }
+        self.tunables.crit_chance = weapon.crit_chance;
+        self.tunables.crit_multiplier = weapon.crit_multiplier;
+        self.equipped = Some(EquippedWeapon {
+            name: base.name.clone(),
+            weapon,
+            item,
+        });
+        true
+    }
+
+    /// Equip a fresh, zero-affix instance of the weapon base `base_id` — the
+    /// starting-loadout convenience (the runtime hands the player a pistol at
+    /// setup). Returns `false` for an unknown or non-weapon base id.
+    pub fn equip_base(&mut self, base_id: &str, content: &Content) -> bool {
+        let Some(base) = content.bases.iter().find(|b| b.id == base_id) else {
+            return false;
+        };
+        let item = ItemInstance {
+            base: base.id.clone(),
+            ilvl: 1,
+            rarity: Rarity::Basic,
+            seed: 0,
+            prefixes: vec![],
+            suffixes: vec![],
+            upgrade_tier: 0,
+            attached: vec![],
+        };
+        self.equip(item, content)
     }
 }
 
@@ -411,7 +491,7 @@ impl World {
         self.resolve_projectiles(dt, content);
         self.move_enemies(dt);
         self.apply_contact_damage(dt);
-        self.collect_pickups();
+        self.collect_pickups(content);
         self.update_spawning(dt, content);
 
         if self.player.current_life <= 0.0 {
@@ -680,8 +760,11 @@ impl World {
         }
     }
 
-    /// Move any ground drops within pickup range into the inventory.
-    fn collect_pickups(&mut self) {
+    /// Move any ground drops within pickup range into the inventory, and
+    /// auto-equip a weapon drop that's a strict upgrade over the current gun
+    /// (see [`World::maybe_equip_upgrade`]). Every pickup still lands in the
+    /// inventory — equipping just also points the loadout at a clone.
+    fn collect_pickups(&mut self, content: &Content) {
         let (px, py) = (self.player.x, self.player.y);
         let r2 = PICKUP_RADIUS * PICKUP_RADIUS;
         let mut i = 0;
@@ -689,12 +772,48 @@ impl World {
             let dx = self.drops[i].x - px;
             let dy = self.drops[i].y - py;
             if dx * dx + dy * dy <= r2 {
-                let picked = self.drops.swap_remove(i);
-                self.last_pickup = Some(format!("{:?} {}", picked.item.rarity, picked.item.base));
-                self.inventory.push(picked.item);
+                let item = self.drops.swap_remove(i).item;
+                let equipped = self.maybe_equip_upgrade(&item, content);
+                let label = format!("{:?} {}", item.rarity, item.base);
+                self.last_pickup = Some(if equipped {
+                    format!("equipped {label}")
+                } else {
+                    label
+                });
+                self.inventory.push(item);
                 continue;
             }
             i += 1;
+        }
+    }
+
+    /// Equip a clone of `item` (and return `true`) when it's a weapon whose
+    /// unarmored DPS beats the current weapon's — the power-fantasy default
+    /// that a better gun just arms itself. Non-weapons, side-grades, and
+    /// downgrades leave the loadout untouched.
+    ///
+    /// Ranking is DPS against a defenseless target, which is order-independent
+    /// but blind to armor/evasion trade-offs (rocket vs the armored boss). v1
+    /// weapons carry only offense, so "bigger unarmored DPS wins" is a fine
+    /// proxy; revisit if weapons ever gain defensive mods.
+    fn maybe_equip_upgrade(&mut self, item: &ItemInstance, content: &Content) -> bool {
+        let Some(base) = content.bases.iter().find(|b| b.id == item.base) else {
+            return false;
+        };
+        if base.slot != "weapon" {
+            return false;
+        }
+        let stats = aggregate_item(item, base, &content.affixes, &[]);
+        let candidate = weapon_rank(&Weapon::from_stats(&stats));
+        let current = self
+            .equipped
+            .as_ref()
+            .map(|e| weapon_rank(&e.weapon))
+            .unwrap_or(0.0);
+        if candidate > current {
+            self.equip(item.clone(), content)
+        } else {
+            false
         }
     }
 
@@ -833,6 +952,14 @@ fn floor_at(map: &Map, x: f32, y: f32) -> bool {
     x >= 0.0 && y >= 0.0 && matches!(map.tile_at(x as u32, y as u32), Tile::Floor)
 }
 
+/// Expected DPS of `weapon` against a defenseless reference target — the
+/// order-independent ranking used to decide whether a picked-up weapon is an
+/// upgrade. A pure `damage × fire_rate × crit_factor` measure (the dummy has no
+/// armor or evasion), so the comparison never depends on which enemy is nearby.
+fn weapon_rank(weapon: &Weapon) -> f32 {
+    dps_against(weapon, &Combatant::dummy(1.0))
+}
+
 /// Per-archetype movement speed (tiles/sec), keyed by enemy `id`. All slower
 /// than `PLAYER_SPEED` (6.0) so the player can kite. Unknown ids fall back to
 /// the baseline zombie pace.
@@ -916,6 +1043,71 @@ mod tests {
             upgrade_tier: 0,
             attached: vec![],
         }
+    }
+
+    /// A weapon base with just damage + fire rate (no crit), so its DPS is a
+    /// clean `dmg × rate` — handy for asserting upgrade comparisons exactly.
+    fn weapon_base(id: &str, name: &str, dmg: f32, rate: f32) -> BaseItem {
+        BaseItem {
+            id: id.into(),
+            name: name.into(),
+            category: "rapid_fire".into(),
+            slot: "weapon".into(),
+            intrinsic_stats: vec![
+                h2b_core::IntrinsicStat {
+                    stat: "weapon_damage".into(),
+                    value: dmg,
+                },
+                h2b_core::IntrinsicStat {
+                    stat: "fire_rate".into(),
+                    value: rate,
+                },
+            ],
+            attachment_slots: vec![],
+        }
+    }
+
+    /// An armor base (helm slot) — used to prove non-weapons never arm the gun.
+    fn armor_base(id: &str) -> BaseItem {
+        BaseItem {
+            id: id.into(),
+            name: id.into(),
+            category: "helm".into(),
+            slot: "helm".into(),
+            intrinsic_stats: vec![],
+            attachment_slots: vec![],
+        }
+    }
+
+    /// Content with three weapons spanning the DPS range plus one armor base:
+    /// pistol 48 dps, cannon 200 dps, peashooter 1 dps, helm (not a weapon).
+    fn weapon_content() -> Content {
+        Content {
+            bases: vec![
+                weapon_base("pistol", "Pistol", 12.0, 4.0),
+                weapon_base("cannon", "Cannon", 50.0, 4.0),
+                weapon_base("peashooter", "Peashooter", 1.0, 1.0),
+                armor_base("helm"),
+            ],
+            ..Content::empty()
+        }
+    }
+
+    fn instance(base_id: &str) -> ItemInstance {
+        ItemInstance {
+            base: base_id.into(),
+            ..dummy_item()
+        }
+    }
+
+    /// Place a ground drop of `base_id` directly on the player.
+    fn drop_on_player(w: &mut World, base_id: &str) {
+        w.drops.push(LootDrop {
+            id: 1,
+            x: w.player.x,
+            y: w.player.y,
+            item: instance(base_id),
+        });
     }
 
     // ---- movement ----
@@ -1599,5 +1791,75 @@ mod tests {
             assert!((ea.x - eb.x).abs() < 1e-6);
             assert!((ea.y - eb.y).abs() < 1e-6);
         }
+    }
+
+    // ---- loadout / equip ----
+
+    #[test]
+    fn equip_base_arms_and_drives_the_fire_path() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        assert!(w.equip_base("cannon", &content));
+        let eq = w.equipped.as_ref().expect("should be armed");
+        assert_eq!(eq.name, "Cannon");
+        assert_eq!(eq.item.base, "cannon");
+        // Weapon-derived stats routed into the tunables the fire path reads.
+        assert_eq!(w.tunables.bullet_damage, 50.0);
+        assert_eq!(w.tunables.fire_rate, 4.0);
+        // End to end: a fired projectile carries the equipped weapon's damage.
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        assert_eq!(w.projectiles[0].damage, 50.0);
+    }
+
+    #[test]
+    fn equip_rejects_non_weapon_and_unknown_bases() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        assert!(!w.equip(instance("helm"), &content), "armor isn't a weapon");
+        assert!(!w.equip_base("raygun", &content), "unknown base id");
+        assert!(w.equipped.is_none());
+    }
+
+    #[test]
+    fn picking_up_a_better_weapon_auto_equips() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("pistol", &content); // 48 dps
+        drop_on_player(&mut w, "cannon"); // 200 dps — strict upgrade
+        w.tick(0.016, &content);
+
+        assert!(w.drops.is_empty(), "drop collected");
+        assert_eq!(w.equipped.as_ref().unwrap().item.base, "cannon");
+        assert_eq!(w.tunables.bullet_damage, 50.0);
+        assert!(w.last_pickup.as_deref().unwrap().starts_with("equipped"));
+        // Still recorded in the inventory like any pickup.
+        assert_eq!(w.inventory.len(), 1);
+    }
+
+    #[test]
+    fn picking_up_a_worse_weapon_keeps_the_current_one() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("cannon", &content); // 200 dps
+        drop_on_player(&mut w, "peashooter"); // 1 dps — downgrade
+        w.tick(0.016, &content);
+
+        assert_eq!(w.equipped.as_ref().unwrap().item.base, "cannon", "no swap");
+        assert_eq!(w.tunables.bullet_damage, 50.0);
+        assert!(!w.last_pickup.as_deref().unwrap().starts_with("equipped"));
+        assert_eq!(w.inventory.len(), 1, "still collected");
+    }
+
+    #[test]
+    fn picking_up_armor_never_arms_the_gun() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("pistol", &content);
+        drop_on_player(&mut w, "helm");
+        w.tick(0.016, &content);
+
+        assert_eq!(w.equipped.as_ref().unwrap().item.base, "pistol");
+        assert!(!w.last_pickup.as_deref().unwrap().starts_with("equipped"));
+        assert_eq!(w.inventory.len(), 1);
     }
 }

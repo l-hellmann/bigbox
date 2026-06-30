@@ -382,11 +382,24 @@ pub fn draw_hud(world: &World) {
     );
     draw_text(&stats, 12.0, 56.0, 22.0, Color::new(0.85, 0.85, 0.85, 1.0));
 
+    if let Some(eq) = &world.equipped {
+        draw_text(
+            &format!(
+                "weapon: {}   dmg {:.0}   rate {:.1}/s",
+                eq.name, eq.weapon.damage_per_shot, eq.weapon.fire_rate
+            ),
+            12.0,
+            78.0,
+            18.0,
+            Color::new(0.80, 0.80, 0.62, 1.0),
+        );
+    }
+
     if let Some(last) = &world.last_pickup {
         draw_text(
             &format!("picked up: {last}"),
             12.0,
-            78.0,
+            100.0,
             18.0,
             Color::new(0.7, 0.85, 0.7, 1.0),
         );

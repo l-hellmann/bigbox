@@ -197,13 +197,17 @@ fn build_map(level: Level, seed: u64) -> Map {
     }
 }
 
-fn new_world(level: Level, seed: u64) -> World {
+fn new_world(level: Level, seed: u64, content: &Content) -> World {
     let mut world = World::new(build_map(level, seed));
     // The arena is the controlled-testing level: start with waves suspended so
     // you spawn enemies deliberately rather than getting swarmed on entry.
     if matches!(level, Level::Arena | Level::ArenaEmpty) {
         world.tunables.auto_spawn = false;
     }
+    // Arm the player so the fire path is gear-derived from frame one. A stock
+    // pistol's stats match the historical constant defaults, so this changes no
+    // numbers — it just makes "what am I holding" explicit and pickup-swappable.
+    world.equip_base("pistol", content);
     world
 }
 
@@ -211,7 +215,7 @@ fn new_world(level: Level, seed: u64) -> World {
 async fn main() {
     let (level, seed) = resolve_run();
     let content = load_content();
-    let mut world = new_world(level, seed);
+    let mut world = new_world(level, seed, &content);
 
     #[cfg(feature = "debug")]
     let mut dbg = debug::DebugUi::new();
@@ -229,7 +233,7 @@ async fn main() {
         }
         // Restart from the dead screen.
         if world.game_over && is_key_pressed(KeyCode::R) {
-            world = new_world(level, seed);
+            world = new_world(level, seed, &content);
         }
 
         // Build the follow-cam first: aim raycasting needs it to unproject
