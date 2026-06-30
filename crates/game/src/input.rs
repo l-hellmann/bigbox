@@ -152,10 +152,10 @@ pub fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
         }
     }
     let wheel = mouse_wheel().1;
-    if is_key_pressed(KeyCode::E) || wheel < 0.0 {
+    if is_key_pressed(KeyCode::E) || wheel < 0.0 || pad.cycle_next {
         cmds.push(Command::CycleWeapon { dir: 1 });
     }
-    if is_key_pressed(KeyCode::Q) || wheel > 0.0 {
+    if is_key_pressed(KeyCode::Q) || wheel > 0.0 || pad.cycle_prev {
         cmds.push(Command::CycleWeapon { dir: -1 });
     }
 
@@ -204,7 +204,7 @@ mod tests {
         PadInput {
             move_dir,
             aim_dir,
-            fire: false,
+            ..PadInput::default()
         }
     }
 

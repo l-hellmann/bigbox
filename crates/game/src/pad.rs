@@ -24,6 +24,11 @@ pub struct PadInput {
     pub aim_dir: Option<(f32, f32)>,
     /// Right trigger held.
     pub fire: bool,
+    /// Right bumper pressed *this frame* (edge-triggered) — cycle to the next
+    /// weapon. Edge detection lives in [`Pads`] since `PadInput` is per-frame.
+    pub cycle_next: bool,
+    /// Left bumper pressed this frame (edge) — cycle to the previous weapon.
+    pub cycle_prev: bool,
 }
 
 /// Diagnostic snapshot of one connected gamepad, for the debug overlay's
@@ -55,20 +60,29 @@ pub struct PadDiag {
     pub pads: Vec<PadInfo>,
 }
 
-/// Native gamepad polling via `gilrs`.
+/// Native gamepad polling via `gilrs`. Carries the previous-frame bumper state
+/// so weapon-cycle inputs can be edge-detected (gilrs has no built-in edge).
 #[cfg(not(target_arch = "wasm32"))]
-pub struct Pads(Option<Gilrs>);
+pub struct Pads {
+    gilrs: Option<Gilrs>,
+    prev_next: bool,
+    prev_prev: bool,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Pads {
     pub fn new() -> Self {
-        Pads(Gilrs::new().ok())
+        Pads {
+            gilrs: Gilrs::new().ok(),
+            prev_next: false,
+            prev_prev: false,
+        }
     }
 
     /// Poll the first connected gamepad for this frame's intent. `deadzone`
     /// (0..1) is the stick magnitude below which input reads as neutral.
     pub fn read(&mut self, deadzone: f32) -> PadInput {
-        let Some(gilrs) = self.0.as_mut() else {
+        let Some(gilrs) = self.gilrs.as_mut() else {
             return PadInput::default();
         };
         // Draining events refreshes the cached pad state as a side effect.
@@ -95,11 +109,20 @@ impl Pads {
             },
         );
         let fire = gp.is_pressed(Button::RightTrigger2);
+        // Bumpers (LB/RB) cycle weapons; edge-detect against the previous frame.
+        let rb = gp.is_pressed(Button::RightTrigger);
+        let lb = gp.is_pressed(Button::LeftTrigger);
+        let cycle_next = rb && !self.prev_next;
+        let cycle_prev = lb && !self.prev_prev;
+        self.prev_next = rb;
+        self.prev_prev = lb;
 
         PadInput {
             move_dir,
             aim_dir,
             fire,
+            cycle_next,
+            cycle_prev,
         }
     }
 
@@ -124,7 +147,7 @@ impl Pads {
             ("Left", Button::DPadLeft),
             ("Right", Button::DPadRight),
         ];
-        let Some(gilrs) = self.0.as_ref() else {
+        let Some(gilrs) = self.gilrs.as_ref() else {
             return PadDiag {
                 initialized: false,
                 pads: Vec::new(),
@@ -198,15 +221,23 @@ mod web {
     const AXIS_LEFT_Y: i32 = 1;
     const AXIS_RIGHT_X: i32 = 2;
     const AXIS_RIGHT_Y: i32 = 3;
+    const BUTTON_LEFT_BUMPER: i32 = 4;
+    const BUTTON_RIGHT_BUMPER: i32 = 5;
     const BUTTON_RIGHT_TRIGGER: i32 = 7;
     /// Analog trigger reads as "held" past this value.
     const TRIGGER_THRESHOLD: f32 = 0.5;
 
-    pub struct Pads;
+    /// Carries the previous-frame bumper state so weapon-cycle inputs edge-trigger
+    /// (the Gamepad API reports held state, not presses).
+    #[derive(Default)]
+    pub struct Pads {
+        prev_next: bool,
+        prev_prev: bool,
+    }
 
     impl Pads {
         pub fn new() -> Self {
-            Pads
+            Pads::default()
         }
 
         /// Poll the first connected gamepad. `deadzone` (0..1) matches the native
@@ -218,6 +249,7 @@ mod web {
                 return PadInput::default();
             }
             let axis = |i| unsafe { quad_gamepad_axis(i) };
+            let button = |i| unsafe { quad_gamepad_button(i) };
 
             // The Gamepad API already reports stick Y as +down, which *is* our
             // world dy (up = −dy). So, unlike the gilrs path (which gets +up and
@@ -235,12 +267,21 @@ mod web {
                 let len = (x * x + y * y).sqrt();
                 (x / len, y / len)
             });
-            let fire = unsafe { quad_gamepad_button(BUTTON_RIGHT_TRIGGER) } > TRIGGER_THRESHOLD;
+            let fire = button(BUTTON_RIGHT_TRIGGER) > TRIGGER_THRESHOLD;
+            // Bumpers cycle weapons; edge-detect against the previous frame.
+            let rb = button(BUTTON_RIGHT_BUMPER) > TRIGGER_THRESHOLD;
+            let lb = button(BUTTON_LEFT_BUMPER) > TRIGGER_THRESHOLD;
+            let cycle_next = rb && !self.prev_next;
+            let cycle_prev = lb && !self.prev_prev;
+            self.prev_next = rb;
+            self.prev_prev = lb;
 
             PadInput {
                 move_dir,
                 aim_dir,
                 fire,
+                cycle_next,
+                cycle_prev,
             }
         }
 

@@ -460,7 +460,7 @@ pub fn draw_hud(world: &World) {
 
     // Controls hint, bottom.
     draw_text(
-        "WASD move  |  mouse aim  |  LMB / Space shoot  |  1-4 / wheel / Q-E weapon  |  ESC quit",
+        "WASD move  |  aim  |  LMB / Space / RT shoot  |  1-4 / wheel / Q-E / bumpers weapon  |  ESC quit",
         12.0,
         screen_height() - 16.0,
         18.0,
