@@ -337,6 +337,16 @@ mod pad {
     }
 }
 
+/// Which device currently drives aim. The right stick switches to `Pad` (and
+/// the last direction is held when the stick re-centers); only actual mouse
+/// movement switches back to `Mouse`. Prevents the aim snapping to the cursor
+/// the moment you let go of the stick.
+#[derive(Clone, Copy, PartialEq)]
+enum AimSource {
+    Mouse,
+    Pad,
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let (level, seed) = resolve_run();
@@ -347,6 +357,12 @@ async fn main() {
     let mut dbg = debug::DebugUi::new();
 
     let mut pads = pad::Pads::new();
+
+    // Aim-source latch (mouse vs. pad) and the last pad-aim direction to hold
+    // when the right stick re-centers.
+    let mut aim_source = AimSource::Mouse;
+    let mut held_aim: Option<(f32, f32)> = None;
+    let mut prev_mouse = mouse_position();
 
     loop {
         let dt = get_frame_time();
@@ -363,22 +379,33 @@ async fn main() {
         // the cursor onto the ground plane.
         let camera = build_camera(&world.player);
         let pad = pads.read();
-
-        // Aim: the gamepad right stick takes priority; otherwise the mouse
-        // cursor's ground-plane hit.
         let mouse_hit = ground_hit(&camera);
-        let aim = pad
-            .aim_dir
-            .or_else(|| aim_direction(&world.player, mouse_hit));
+
+        // Switch the aim source: the right stick claims it (and updates the held
+        // direction); otherwise only real mouse movement hands it back to the
+        // mouse. With the stick re-centered we keep pointing where it last was.
+        let mouse_pos = mouse_position();
+        let mouse_moved =
+            (mouse_pos.0 - prev_mouse.0).abs() > 1.0 || (mouse_pos.1 - prev_mouse.1).abs() > 1.0;
+        prev_mouse = mouse_pos;
+        if pad.aim_dir.is_some() {
+            aim_source = AimSource::Pad;
+            held_aim = pad.aim_dir;
+        } else if mouse_moved {
+            aim_source = AimSource::Mouse;
+        }
+
+        let aim = match aim_source {
+            AimSource::Pad => pad.aim_dir.or(held_aim),
+            AimSource::Mouse => aim_direction(&world.player, mouse_hit),
+        };
         // Aim marker (3D crosshair): a point ahead of the player when aiming on
         // the stick, else the mouse hit.
-        let aim_hit = match pad.aim_dir {
-            Some((ax, ay)) => Some(vec3(
-                world.player.x + ax * 6.0,
-                0.0,
-                world.player.y + ay * 6.0,
-            )),
-            None => mouse_hit,
+        let aim_hit = match aim_source {
+            AimSource::Pad => aim.map(|(ax, ay)| {
+                vec3(world.player.x + ax * 6.0, 0.0, world.player.y + ay * 6.0)
+            }),
+            AimSource::Mouse => mouse_hit,
         };
 
         // Debug overlay runs before input so its spawns/tunable edits apply to
