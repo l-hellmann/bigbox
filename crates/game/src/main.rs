@@ -218,9 +218,6 @@ mod pad {
     use super::PadInput;
     use gilrs::{Axis, Button, Gilrs};
 
-    /// Stick deadzone — magnitude below this reads as neutral.
-    const DEADZONE: f32 = 0.2;
-
     pub struct Pads(Option<Gilrs>);
 
     impl Pads {
@@ -228,8 +225,9 @@ mod pad {
             Pads(Gilrs::new().ok())
         }
 
-        /// Poll the first connected gamepad for this frame's intent.
-        pub fn read(&mut self) -> PadInput {
+        /// Poll the first connected gamepad for this frame's intent. `deadzone`
+        /// (0..1) is the stick magnitude below which input reads as neutral.
+        pub fn read(&mut self, deadzone: f32) -> PadInput {
             let Some(gilrs) = self.0.as_mut() else {
                 return PadInput::default();
             };
@@ -242,7 +240,7 @@ mod pad {
             // Stick Y is +up; our world dy has up = −dy (matching `W → −dy`),
             // so flip Y for both vectors.
             let deadzoned = |x: f32, y: f32| -> Option<(f32, f32)> {
-                if (x * x + y * y).sqrt() < DEADZONE {
+                if (x * x + y * y).sqrt() < deadzone {
                     None
                 } else {
                     Some((x, -y))
@@ -378,7 +376,7 @@ async fn main() {
         // Build the follow-cam first: aim raycasting needs it to unproject
         // the cursor onto the ground plane.
         let camera = build_camera(&world.player);
-        let pad = pads.read();
+        let pad = pads.read(world.tunables.stick_deadzone);
         let mouse_hit = ground_hit(&camera);
 
         // Switch the aim source: the right stick claims it (and updates the held

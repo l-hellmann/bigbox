@@ -122,6 +122,10 @@ pub struct Tunables {
     pub separation_weight: f32,
     /// Radius (tiles) within which enemies repel one another.
     pub separation_radius: f32,
+    /// Gamepad stick deadzone (0..1) — magnitude below this reads as neutral.
+    /// Applies to both sticks. Client-side input config that rides along in the
+    /// tunables for live tuning + preset export.
+    pub stick_deadzone: f32,
     /// When false, the wave timer is suspended — useful for hand-spawning a
     /// controlled set of enemies to study one interaction at a time.
     pub auto_spawn: bool,
@@ -150,6 +154,7 @@ impl Default for Tunables {
             los_range: 20.0,
             separation_weight: 1.5,
             separation_radius: 1.0,
+            stick_deadzone: 0.2,
             auto_spawn: true,
             god_mode: false,
         }

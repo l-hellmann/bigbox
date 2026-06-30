@@ -227,6 +227,7 @@ impl DebugUi {
             ui.add(egui::Slider::new(&mut t.los_range, 0.0..=40.0).text("LOS beeline range"));
             ui.add(egui::Slider::new(&mut t.separation_weight, 0.0..=5.0).text("separation weight"));
             ui.add(egui::Slider::new(&mut t.separation_radius, 0.0..=3.0).text("separation radius"));
+            ui.add(egui::Slider::new(&mut t.stick_deadzone, 0.0..=0.6).text("stick deadzone"));
         });
 
         ui.collapsing("spawning / loot", |ui| {
