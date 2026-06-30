@@ -446,27 +446,27 @@ impl World {
     /// `aggregate_item → Weapon::from_stats` path (the same numbers the loot sim
     /// reports). `None` for a non-weapon base or an unknown base id, so armor
     /// can never enter the weapon rack.
-    fn build_equipped(&self, item: ItemInstance, content: &Content) -> Option<EquippedWeapon> {
+    fn build_equipped(&self, item: &ItemInstance, content: &Content) -> Option<EquippedWeapon> {
         let base = content.bases.iter().find(|b| b.id == item.base)?;
         if base.slot != "weapon" {
             return None;
         }
         // v1 drops never roll attachments, so the attachment pool is empty;
         // rolled affixes resolve against the loaded content templates.
-        let stats = aggregate_item(&item, base, &content.affixes, &[]);
+        let stats = aggregate_item(item, base, &content.affixes, &[]);
         Some(EquippedWeapon {
             name: base.name.clone(),
             weapon: Weapon::from_stats(&stats),
             profile: fire_profile(&base.id),
-            item,
+            item: item.clone(),
         })
     }
 
-    /// Add `item` to the rack if it's a weapon, returning its new slot index.
-    fn add_weapon(&mut self, item: ItemInstance, content: &Content) -> Option<usize> {
-        let ew = self.build_equipped(item, content)?;
-        self.loadout.push(ew);
-        Some(self.loadout.len() - 1)
+    /// Rack slot currently holding the same archetype (base id) as `ew`, if any.
+    /// The rack keeps **one weapon per archetype**, so this is the slot a new
+    /// instance of that weapon competes with.
+    fn archetype_slot(&self, base: &str) -> Option<usize> {
+        self.loadout.iter().position(|w| w.item.base == base)
     }
 
     /// Make the weapon at `slot` active: route its damage / fire rate / crit and
@@ -509,16 +509,28 @@ impl World {
         }
     }
 
-    /// Add `item` to the rack and make it active. Returns `false` (unchanged) for
-    /// a non-weapon / unknown base. The general "arm this item now" entry point.
+    /// Arm `item` now: ensure its archetype's rack slot holds the better of
+    /// `item` and whatever is already there, then make that slot active. Returns
+    /// `false` (unchanged) for a non-weapon / unknown base. The general "equip
+    /// this" entry point (starting loadout, tests).
     pub fn equip(&mut self, item: ItemInstance, content: &Content) -> bool {
-        match self.add_weapon(item, content) {
-            Some(slot) => {
-                self.activate(slot);
-                true
+        let Some(cand) = self.build_equipped(&item, content) else {
+            return false;
+        };
+        let slot = match self.archetype_slot(&cand.item.base) {
+            Some(s) => {
+                if weapon_rank(&cand.weapon) > weapon_rank(&self.loadout[s].weapon) {
+                    self.loadout[s] = cand;
+                }
+                s
             }
-            None => false,
-        }
+            None => {
+                self.loadout.push(cand);
+                self.loadout.len() - 1
+            }
+        };
+        self.activate(slot);
+        true
     }
 
     /// Equip a fresh, zero-affix instance of the weapon base `base_id` — the
@@ -1023,10 +1035,8 @@ impl World {
         }
     }
 
-    /// Move any ground drops within pickup range into the inventory, and
-    /// auto-equip a weapon drop that's a strict upgrade over the current gun
-    /// (see [`World::maybe_equip_upgrade`]). Every pickup still lands in the
-    /// inventory — equipping just also points the loadout at a clone.
+    /// Collect any ground drops within pickup range, routing each via
+    /// [`World::acquire_item`]. Returns nothing; sets `last_pickup` for HUD.
     fn collect_pickups(&mut self, content: &Content) {
         let (px, py) = (self.player.x, self.player.y);
         let r2 = PICKUP_RADIUS * PICKUP_RADIUS;
@@ -1037,8 +1047,7 @@ impl World {
             if dx * dx + dy * dy <= r2 {
                 let item = self.drops.swap_remove(i).item;
                 let label = format!("{:?} {}", item.rarity, item.base);
-                self.inventory.push(item.clone());
-                let equipped = self.acquire_weapon(item, content);
+                let equipped = self.acquire_item(item, content);
                 self.last_pickup = Some(if equipped {
                     format!("equipped {label}")
                 } else {
@@ -1050,31 +1059,54 @@ impl World {
         }
     }
 
-    /// Add a weapon pickup to the rack and auto-activate it when it's a strict
-    /// DPS upgrade over the current weapon (or the first weapon held). Returns
-    /// whether it became active. Worse / side-grade weapons still enter the rack
-    /// — switchable, just not auto-equipped. Non-weapons are ignored.
+    /// Route one picked-up `item`. Weapons compete for their archetype's single
+    /// rack slot — the rack keeps the **best instance per archetype**, and the
+    /// loser (or a worse duplicate, or any non-weapon) goes to the inventory.
+    /// Auto-activates a racked weapon when it's the first held, a strict DPS
+    /// upgrade over the active weapon, or an upgrade to the active archetype.
+    /// Returns whether it became the active weapon.
     ///
     /// Ranking is DPS against a defenseless target: order-independent but blind
     /// to armor/evasion trade-offs (rocket vs the armored boss). v1 weapons carry
     /// only offense, so "bigger unarmored DPS wins" is a fine proxy; revisit if
     /// weapons ever gain defensive mods.
-    fn acquire_weapon(&mut self, item: ItemInstance, content: &Content) -> bool {
-        // Snapshot the current weapon's rank *before* adding, so the new slot
-        // doesn't compare against itself when the rack was empty.
-        let prev_rank = self.equipped().map(|e| weapon_rank(&e.weapon));
-        let Some(slot) = self.add_weapon(item, content) else {
+    fn acquire_item(&mut self, item: ItemInstance, content: &Content) -> bool {
+        let Some(cand) = self.build_equipped(&item, content) else {
+            // Not a weapon (armor, unknown base) — straight to the bag.
+            self.inventory.push(item);
             return false;
         };
-        let candidate = weapon_rank(&self.loadout[slot].weapon);
-        let upgrade = match prev_rank {
-            Some(r) => candidate > r,
-            None => true,
+        let cand_rank = weapon_rank(&cand.weapon);
+        let active_rank = self.equipped().map(|e| weapon_rank(&e.weapon));
+
+        let slot = match self.archetype_slot(&cand.item.base) {
+            Some(s) => {
+                if cand_rank <= weapon_rank(&self.loadout[s].weapon) {
+                    // A worse/equal duplicate of an archetype already racked —
+                    // keep the racked one, stash this in the bag.
+                    self.inventory.push(item);
+                    return false;
+                }
+                // Better: rack it, the displaced weapon falls to the bag.
+                let old = std::mem::replace(&mut self.loadout[s], cand);
+                self.inventory.push(old.item);
+                s
+            }
+            None => {
+                // A new archetype always claims a rack slot.
+                self.loadout.push(cand);
+                self.loadout.len() - 1
+            }
         };
-        if upgrade {
+
+        let activate = match active_rank {
+            None => true,
+            Some(r) => cand_rank > r || slot == self.active,
+        };
+        if activate {
             self.activate(slot);
         }
-        upgrade
+        activate
     }
 
     /// Spawn a wave on the timer, placed by `pick_spawn_points` (distance-biased,
@@ -1189,10 +1221,10 @@ impl World {
         }
     }
 
-    /// Debug: arm a fresh instance of weapon `base_id`, **replacing** the active
-    /// rack slot instead of appending — so repeatedly equipping from the overlay
-    /// while tuning doesn't pile up duplicate weapons. Pushes a first slot if the
-    /// rack is empty. No-op for an unknown or non-weapon base.
+    /// Debug: force-load a fresh, stock instance of weapon `base_id` for tuning.
+    /// Replaces that archetype's rack slot if present (so it loads stock stats
+    /// even over an upgraded copy), else adds a slot — one per archetype, so it
+    /// never piles up duplicates. No-op for an unknown or non-weapon base.
     pub fn debug_equip_base(&mut self, base_id: &str, content: &Content) {
         let item = ItemInstance {
             base: base_id.into(),
@@ -1204,17 +1236,20 @@ impl World {
             upgrade_tier: 0,
             attached: vec![],
         };
-        let Some(ew) = self.build_equipped(item, content) else {
+        let Some(ew) = self.build_equipped(&item, content) else {
             return;
         };
-        if self.loadout.is_empty() {
-            self.loadout.push(ew);
-            self.activate(0);
-        } else {
-            let slot = self.active;
-            self.loadout[slot] = ew;
-            self.activate(slot);
-        }
+        let slot = match self.archetype_slot(base_id) {
+            Some(s) => {
+                self.loadout[s] = ew;
+                s
+            }
+            None => {
+                self.loadout.push(ew);
+                self.loadout.len() - 1
+            }
+        };
+        self.activate(slot);
     }
 
     /// Restore the player to full life and lift `game_over` — revive without a
@@ -1421,6 +1456,17 @@ mod tests {
     fn instance(base_id: &str) -> ItemInstance {
         ItemInstance {
             base: base_id.into(),
+            ..dummy_item()
+        }
+    }
+
+    /// Same base at a given upgrade tier — a stronger instance of one archetype
+    /// (upgrade scaling lifts its aggregated DPS), for testing per-archetype
+    /// rack replacement without needing affix content.
+    fn instance_tier(base_id: &str, tier: u8) -> ItemInstance {
+        ItemInstance {
+            base: base_id.into(),
+            upgrade_tier: tier,
             ..dummy_item()
         }
     }
@@ -2157,8 +2203,9 @@ mod tests {
         assert_eq!(w.equipped().unwrap().item.base, "cannon");
         assert_eq!(w.tunables.bullet_damage, 50.0);
         assert!(w.last_pickup.as_deref().unwrap().starts_with("equipped"));
-        // Still recorded in the inventory like any pickup.
-        assert_eq!(w.inventory.len(), 1);
+        // A new archetype that's equipped lives in the rack, not the bag.
+        assert_eq!(w.loadout().len(), 2);
+        assert!(w.inventory.is_empty());
     }
 
     #[test]
@@ -2166,13 +2213,15 @@ mod tests {
         let content = weapon_content();
         let mut w = World::new(single_floor_map());
         w.equip_base("cannon", &content); // 200 dps
-        drop_on_player(&mut w, "peashooter"); // 1 dps — downgrade
+        drop_on_player(&mut w, "peashooter"); // 1 dps — a new, weaker archetype
         w.tick(0.016, &content);
 
+        // Different archetype → joins the rack (switchable) but doesn't auto-equip.
         assert_eq!(w.equipped().unwrap().item.base, "cannon", "no swap");
         assert_eq!(w.tunables.bullet_damage, 50.0);
         assert!(!w.last_pickup.as_deref().unwrap().starts_with("equipped"));
-        assert_eq!(w.inventory.len(), 1, "still collected");
+        assert_eq!(w.loadout().len(), 2);
+        assert!(w.inventory.is_empty());
     }
 
     // ---- archetypes: fire profiles ----
@@ -2409,6 +2458,39 @@ mod tests {
         assert!(!w.cycle_weapon(1), "can't cycle one weapon");
         assert_eq!(w.active_slot(), 0);
         assert_eq!(w.equipped().unwrap().item.base, "pistol");
+    }
+
+    #[test]
+    fn same_archetype_keeps_one_rack_slot_rest_to_inventory() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("pistol", &content); // stock pistol racked
+        assert_eq!(w.loadout().len(), 1);
+
+        // A stronger pistol replaces the rack slot — the rack stays length 1, the
+        // displaced stock pistol falls to the bag.
+        w.drops.push(LootDrop {
+            id: 1,
+            x: w.player.x,
+            y: w.player.y,
+            item: instance_tier("pistol", 5),
+        });
+        w.tick(0.016, &content);
+        assert_eq!(w.loadout().len(), 1, "same archetype must not grow the rack");
+        assert_eq!(w.equipped().unwrap().item.upgrade_tier, 5, "stronger one racked");
+        assert_eq!(w.inventory.len(), 1, "displaced stock pistol bagged");
+
+        // A weaker pistol doesn't displace it — straight to the bag.
+        w.drops.push(LootDrop {
+            id: 2,
+            x: w.player.x,
+            y: w.player.y,
+            item: instance_tier("pistol", 0),
+        });
+        w.tick(0.016, &content);
+        assert_eq!(w.loadout().len(), 1, "still one pistol slot");
+        assert_eq!(w.equipped().unwrap().item.upgrade_tier, 5, "kept the stronger");
+        assert_eq!(w.inventory.len(), 2, "weaker duplicate bagged");
     }
 
     #[test]
