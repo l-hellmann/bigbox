@@ -101,6 +101,16 @@ pub struct Tunables {
     pub crit_chance: f32,
     /// Crit damage multiplier (`1.5` = 150% on a crit). Paired with `crit_chance`.
     pub crit_multiplier: f32,
+    /// Shotgun pellet count — how many projectiles a [`FireProfile::Spread`] shot
+    /// fans out, each carrying `bullet_damage / spread_pellets`. Seeded from the
+    /// weapon on [`World::equip`]; only consulted while a spread weapon is held.
+    pub spread_pellets: u32,
+    /// Shotgun fan half-angle in radians (pellets span `±spread_angle`).
+    pub spread_angle: f32,
+    /// Rocket blast radius in tiles for a [`FireProfile::Explosive`] shot.
+    pub blast_radius: f32,
+    /// Rocket projectile-speed multiplier (`<1` = a slow, readable lob).
+    pub blast_speed_factor: f32,
     pub contact_dps: f32,
     pub spawn_interval: f32,
     pub spawn_batch: usize,
@@ -146,6 +156,12 @@ impl Default for Tunables {
             bullet_lifetime: BULLET_LIFETIME,
             crit_chance: 0.0,
             crit_multiplier: 1.0,
+            // Match the `fire_profile` defaults so a never-equipped world (tests)
+            // and a freshly-equipped heavy weapon agree.
+            spread_pellets: 6,
+            spread_angle: 0.28,
+            blast_radius: 1.6,
+            blast_speed_factor: 0.55,
             contact_dps: CONTACT_DPS,
             spawn_interval: SPAWN_INTERVAL,
             spawn_batch: SPAWN_BATCH,
@@ -436,10 +452,29 @@ impl World {
         }
         self.tunables.crit_chance = weapon.crit_chance;
         self.tunables.crit_multiplier = weapon.crit_multiplier;
+        // Seed the archetype's fire-pattern knobs into the tunables too, so they
+        // become live-tunable from the same surface as damage/fire-rate (the
+        // debug overlay binds sliders here). The profile keeps the per-weapon
+        // defaults; the tunables hold the live values the fire path reads.
+        let profile = fire_profile(&base.id);
+        match profile {
+            FireProfile::Spread { pellets, spread } => {
+                self.tunables.spread_pellets = pellets;
+                self.tunables.spread_angle = spread;
+            }
+            FireProfile::Explosive {
+                radius,
+                speed_factor,
+            } => {
+                self.tunables.blast_radius = radius;
+                self.tunables.blast_speed_factor = speed_factor;
+            }
+            FireProfile::Single => {}
+        }
         self.equipped = Some(EquippedWeapon {
             name: base.name.clone(),
             weapon,
-            profile: fire_profile(&base.id),
+            profile,
             item,
         });
         true
@@ -530,10 +565,13 @@ impl World {
     fn spawn_shot(&mut self, ax: f32, ay: f32, profile: FireProfile) {
         let speed = self.tunables.projectile_speed;
         let damage = self.tunables.bullet_damage;
+        // The profile gives the *kind*; the live parameters come from the
+        // tunables (seeded on equip, slider-adjustable in the debug overlay).
         match profile {
             FireProfile::Single => self.push_projectile(ax, ay, speed, damage, 0.0),
-            FireProfile::Spread { pellets, spread } => {
-                let pellets = pellets.max(1);
+            FireProfile::Spread { .. } => {
+                let pellets = self.tunables.spread_pellets.max(1);
+                let spread = self.tunables.spread_angle;
                 let per = damage / pellets as f32;
                 for k in 0..pellets {
                     // Evenly fan the pellets across [-spread, +spread]; a single
@@ -549,10 +587,13 @@ impl World {
                     self.push_projectile(rx, ry, speed, per, 0.0);
                 }
             }
-            FireProfile::Explosive {
-                radius,
-                speed_factor,
-            } => self.push_projectile(ax, ay, speed * speed_factor, damage, radius),
+            FireProfile::Explosive { .. } => self.push_projectile(
+                ax,
+                ay,
+                speed * self.tunables.blast_speed_factor,
+                damage,
+                self.tunables.blast_radius,
+            ),
         }
     }
 
@@ -2061,6 +2102,67 @@ mod tests {
         assert!(
             w.projectiles.iter().any(|p| p.vy.abs() > 1e-3),
             "pellets should fan out, not fire parallel"
+        );
+    }
+
+    #[test]
+    fn equipping_seeds_the_archetype_tunables() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("shotgun", &content);
+        assert_eq!(w.tunables.spread_pellets, 6);
+        assert!((w.tunables.spread_angle - 0.28).abs() < 1e-6);
+        w.equip_base("rocket_launcher", &content);
+        assert!((w.tunables.blast_radius - 1.6).abs() < 1e-6);
+        assert!((w.tunables.blast_speed_factor - 0.55).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spread_pellet_count_is_live_tunable() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("shotgun", &content);
+        let total = w.tunables.bullet_damage;
+        // Override the seeded pellet count — the fire path reads the tunable.
+        w.tunables.spread_pellets = 10;
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        assert_eq!(w.projectiles.len(), 10);
+        for p in &w.projectiles {
+            assert!((p.damage - total / 10.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn blast_radius_is_live_tunable() {
+        let content = weapon_content();
+        let mut w = World::new(open_room(21, 21));
+        w.equip_base("rocket_launcher", &content);
+        // Shrink the blast so a neighbor 1.2 tiles away is now outside it.
+        w.tunables.blast_radius = 0.5;
+        let (ex, ey) = (w.player.x + 4.0, w.player.y);
+        for (k, off) in [0.0_f32, 1.2].into_iter().enumerate() {
+            w.enemies.push(EnemyInstance {
+                id: k as u64,
+                x: ex,
+                y: ey + off,
+                archetype: 0,
+                combatant: Combatant::dummy(1000.0),
+                speed: 0.0,
+                awake: true,
+            });
+        }
+        w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
+        for _ in 0..40 {
+            w.tick(0.03, &content);
+            if w.projectiles.is_empty() {
+                break;
+            }
+        }
+        // Direct-hit enemy damaged; the far one survives the shrunken blast.
+        assert!(w.enemies[0].combatant.current_life < 1000.0, "direct hit");
+        assert_eq!(
+            w.enemies[1].combatant.current_life, 1000.0,
+            "neighbor outside the shrunken blast is spared"
         );
     }
 

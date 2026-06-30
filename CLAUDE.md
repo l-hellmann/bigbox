@@ -242,7 +242,9 @@ Mechanism — the load-bearing refactor: every gameplay knob that used to be a
 snapshots them), so behaviour and tests are unchanged until something mutates a
 field. The panel binds sliders straight to `world.tunables` (damage, fire rate,
 projectile speed, contact dps, player/enemy speed, spawn cadence + caps, drop
-chance), plus god mode and an auto-spawn toggle. Manual spawning, clear/revive,
+chance, plus the equipped archetype's fire-pattern knobs — shotgun pellet
+count + spread half-angle, or rocket blast radius + speed factor — shown only
+for the held weapon's profile), plus god mode and an auto-spawn toggle. Manual spawning, clear/revive,
 and a per-shot hit readout (damage dealt / crit / dodge, surfaced from the
 otherwise-discarded `resolve_hit` result) go through `World::debug_*` methods.
 Export/import round-trips the whole `Tunables` block to `head2box-tunables.ron`

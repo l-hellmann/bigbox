@@ -11,7 +11,7 @@
 
 use egui_macroquad::egui;
 use h2b_core::{HitResult, Weapon, dps_against, time_to_kill};
-use h2b_game::{Content, Tunables, World};
+use h2b_game::{Content, FireProfile, Tunables, World};
 use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
 
@@ -255,6 +255,27 @@ impl DebugUi {
         ui.add(egui::Slider::new(&mut t.crit_chance, 0.0..=1.0).text("crit chance"));
         ui.add(egui::Slider::new(&mut t.crit_multiplier, 1.0..=5.0).text("crit mult"));
         ui.add(egui::Slider::new(&mut t.contact_dps, 0.0..=100.0).text("contact dps"));
+
+        // Archetype fire-pattern knobs — shown only for the profile the equipped
+        // weapon actually uses (seeded from the weapon on equip, live here). The
+        // fire path reads these tunables, so a drag retunes the next shot.
+        match world.equipped.as_ref().map(|e| e.profile) {
+            Some(FireProfile::Spread { .. }) => {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("shotgun spread").weak().size(11.5));
+                let t = &mut world.tunables;
+                ui.add(egui::Slider::new(&mut t.spread_pellets, 1..=16).text("pellets"));
+                ui.add(egui::Slider::new(&mut t.spread_angle, 0.0..=1.2).text("half-angle rad"));
+            }
+            Some(FireProfile::Explosive { .. }) => {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("rocket blast").weak().size(11.5));
+                let t = &mut world.tunables;
+                ui.add(egui::Slider::new(&mut t.blast_radius, 0.2..=6.0).text("blast radius"));
+                ui.add(egui::Slider::new(&mut t.blast_speed_factor, 0.1..=1.5).text("rocket speed ×"));
+            }
+            _ => {}
+        }
 
         // Live expected DPS/TTK of the current tunables weapon against the
         // selected archetype — the same expected-value lens the sim reports.

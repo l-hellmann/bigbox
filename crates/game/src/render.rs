@@ -408,8 +408,12 @@ pub fn draw_hud(world: &World) {
 
     if let Some(eq) = &world.equipped {
         let tag = match eq.profile {
-            FireProfile::Spread { pellets, .. } => format!("   {pellets}-pellet spread"),
-            FireProfile::Explosive { radius, .. } => format!("   blast r{radius:.1}"),
+            FireProfile::Spread { .. } => {
+                format!("   {}-pellet spread", world.tunables.spread_pellets)
+            }
+            FireProfile::Explosive { .. } => {
+                format!("   blast r{:.1}", world.tunables.blast_radius)
+            }
             FireProfile::Single => String::new(),
         };
         draw_text(
