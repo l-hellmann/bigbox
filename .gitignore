@@ -1,2 +1,5 @@
 /target
 .attic/
+# web build artifact (produced by web/build.sh)
+/web/head2box.wasm
+.playwright-mcp/

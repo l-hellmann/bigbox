@@ -29,6 +29,18 @@ mod render;
 #[cfg(feature = "debug")]
 pub use pad::PadDiag;
 
+// On wasm, `rand`'s transitive `getrandom` needs a backend or it won't link.
+// Gameplay RNG is always seeded, so getrandom is never actually called —
+// register a trivial stub (deterministic zeros) rather than the `js` feature,
+// which would pull wasm-bindgen glue that macroquad's loader can't satisfy.
+#[cfg(target_arch = "wasm32")]
+getrandom::register_custom_getrandom!(getrandom_stub);
+#[cfg(target_arch = "wasm32")]
+fn getrandom_stub(buf: &mut [u8]) -> Result<(), getrandom::Error> {
+    buf.fill(0);
+    Ok(())
+}
+
 /// Camera offset above the player, in world units. With `CAMERA_BACK` this
 /// sets the tilt: atan(HEIGHT / BACK) ≈ 56° — the classic BoxHead overhead
 /// angle that still shows wall height.

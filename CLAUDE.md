@@ -67,7 +67,7 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
 - **Serde:** `serde` + `ron` for content files. RON over JSON/TOML because it matches Rust's type system and round-trips enums cleanly.
 - **RNG:** `rand` with explicit `StdRng` seeded from a known source. **Never** use `thread_rng` for anything gameplay-affecting — determinism matters for procgen, loot reproducibility, and debugging.
 - **Persistence (web):** IndexedDB via `gloo-storage` or similar. Save on debounce, test the "tab closed mid-fight" path early.
-- **Build:** `cargo` + `wasm-bindgen` for the wasm target. Native build kept working for fast iteration and headless tests.
+- **Build:** `cargo` targeting `wasm32-unknown-unknown` for web, loaded by macroquad's own JS shim (`mq_js_bundle.js`) — **not** `wasm-bindgen`. macroquad's loader provides the raw wasm imports itself; pulling in wasm-bindgen glue (via gilrs or getrandom's `js` feature) leaves unresolved `__wbindgen_*` imports the loader can't satisfy. `make web` / `make web-serve`; details + caveats in `/web/README.md`. Native build kept working for fast iteration and headless tests.
 
 ---
 
@@ -88,7 +88,8 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
                      follow-cam. Live-tuning egui
                      debug overlay behind `--features debug` (runtime Tunables).
 /assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
-/web              ⏳ wasm bundling, index.html, JS shim
+/web              ✅ wasm build: index.html + macroquad JS loader, built via
+                     `make web` (keyboard/mouse; no gamepad/debug overlay — see README)
 ```
 
 Keep `core` free of rendering and IO dependencies. It must compile and run in a headless test or CLI sim without dragging in macroquad. This is the single most important architectural rule — it's what makes the loot simulator possible and what keeps unit tests fast.
@@ -305,7 +306,7 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - ⏳ **Biomes:** 1 — deferred; BSP procgen produces a single aesthetic for now, biome variation layers on later.
 - ⏳ **Room templates:** 20 — deferred; v1 uses generic BSP rooms. Hand-authored templates can stitch in when content scope demands it.
 - ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
-- ✅ **Game runtime (window + movement + shooting):** boxy-3D macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor raycast onto the ground plane). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here. Also takes **twin-stick gamepad** input via `gilrs` (left stick = move, right stick = aim, right trigger = fire); the `pad` module resolves one `PadInput`/frame and `collect_input` merges it with keyboard/mouse (either works). `gilrs` is cross-platform — its wasm backend is the browser Gamepad API, so the same path serves native and web.
+- ✅ **Game runtime (window + movement + shooting):** boxy-3D macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor raycast onto the ground plane). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here. Also takes **twin-stick gamepad** input via `gilrs` (left stick = move, right stick = aim, right trigger = fire); the `pad` module resolves one `PadInput`/frame and `collect_input` merges it with keyboard/mouse (either works). **Native only:** gilrs's web backend reaches the browser Gamepad API through `wasm-bindgen`, whose glue macroquad's plain loader can't satisfy, so gilrs is a native-only dependency and the web build ships a no-op `Pads` stub (`#[cfg(target_arch = "wasm32")]`). Gamepad-on-web is deferred; keyboard/mouse cover the web build.
 - ✅ **Game runtime (enemies + hit detection + loot pickup):** waves spawn via `pick_spawn_points`, path to the player with `FlowField` (recomputed per player-tile-change), take projectile hits through `core::combat::resolve_hit` (enemy armor/dodge applies), and on death award XP + roll an `ItemInstance` drop the player walks over to collect. Touching enemies drain life; zero life → death + restart. Loot rolls and spawns are seeded per-event from `(world_seed, event_id)`; every enemy/drop carries a stable id (the eventual table key + interpolation match key). No player loadout yet — bullet damage/fire rate are still constants, not gear-derived.
 - ⏳ **Persistence:** IndexedDB save on debounce (web target). The "tab closed mid-fight" path needs to work before save format gets locked.
 

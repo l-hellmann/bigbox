@@ -680,6 +680,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "egui-macroquad",
+ "getrandom 0.2.17",
  "gilrs",
  "head2box-content",
  "head2box-core",

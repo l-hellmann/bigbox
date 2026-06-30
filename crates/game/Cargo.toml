@@ -26,8 +26,11 @@ egui-macroquad = { version = "0.17", optional = true }
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
-# Gamepad input (twin-stick). Cross-platform — gilrs has a wasm backend (the
-# browser Gamepad API), so the same path works native and web.
+# Gamepad input (twin-stick) — native only. gilrs *compiles* for wasm, but its
+# web backend reaches the browser Gamepad API through wasm-bindgen, whose JS
+# glue macroquad's plain loader can't provide. The web build ships a no-op pad
+# stub instead (keyboard/mouse still work); gamepad-on-web is deferred.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gilrs = "0.11"
 
 [features]
@@ -35,3 +38,13 @@ gilrs = "0.11"
 # RON export/import, and clap CLI arg parsing. Off by default → none of it
 # (nor egui/serde/ron/clap) lands in a `--release` or wasm build.
 debug = ["dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]
+
+# wasm-only: `rand`'s transitive `getrandom 0.2` won't compile for
+# wasm32-unknown-unknown without a backend. The `js` feature would work but
+# drags in wasm-bindgen glue that macroquad's plain JS loader can't provide
+# (unresolved `__wbindgen_*` imports). Gameplay RNG is *always* seeded, so
+# getrandom is never actually called — the `custom` feature lets us register a
+# trivial stub backend instead (see `main.rs`), satisfying the link with zero
+# wasm-bindgen footprint. Feature-unification applies it to the transitive copy.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }

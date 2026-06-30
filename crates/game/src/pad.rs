@@ -1,8 +1,12 @@
-//! Gamepad polling via `gilrs` — works native and on wasm (browser Gamepad
-//! API). Twin-stick mapping: left stick = move, right stick = aim, right
-//! trigger = fire. Resolves one `PadInput` per frame; the runtime merges it
-//! with keyboard/mouse in `collect_input`.
+//! Gamepad polling. Twin-stick mapping: left stick = move, right stick = aim,
+//! right trigger = fire. Resolves one `PadInput` per frame; the runtime merges
+//! it with keyboard/mouse in `collect_input`.
+//!
+//! Native uses `gilrs`. On wasm the web build ships a no-op stub: gilrs reaches
+//! the browser Gamepad API through wasm-bindgen, whose JS glue macroquad's plain
+//! loader can't provide — so gamepad-on-web is deferred (keyboard/mouse work).
 
+#[cfg(not(target_arch = "wasm32"))]
 use gilrs::{Axis, Button, Gilrs};
 
 /// One frame of gamepad intent, resolved from the active pad (all-`None` when
@@ -48,8 +52,11 @@ pub struct PadDiag {
     pub pads: Vec<PadInfo>,
 }
 
+/// Native gamepad polling via `gilrs`.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Pads(Option<Gilrs>);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Pads {
     pub fn new() -> Self {
         Pads(Gilrs::new().ok())
@@ -160,6 +167,33 @@ impl Pads {
         PadDiag {
             initialized: true,
             pads,
+        }
+    }
+}
+
+/// Web stub: no gamepad backend (see the module note). Keyboard/mouse input is
+/// unaffected — it flows through macroquad, not here.
+#[cfg(target_arch = "wasm32")]
+pub struct Pads;
+
+#[cfg(target_arch = "wasm32")]
+impl Pads {
+    pub fn new() -> Self {
+        Pads
+    }
+
+    /// Always neutral: no pad on web.
+    pub fn read(&mut self, _deadzone: f32) -> PadInput {
+        PadInput::default()
+    }
+
+    /// Reports "no backend" to the debug overlay (debug builds don't target
+    /// wasm in practice, but keep the surface consistent).
+    #[cfg(feature = "debug")]
+    pub fn debug_diag(&self) -> PadDiag {
+        PadDiag {
+            initialized: false,
+            pads: Vec::new(),
         }
     }
 }
