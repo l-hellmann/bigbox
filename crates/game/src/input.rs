@@ -138,6 +138,27 @@ pub fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
         cmds.push(Command::Fire { dx: adx, dy: ady });
     }
 
+    // Weapon switching (edge-triggered): number keys pick a rack slot directly,
+    // Q/E and the mouse wheel cycle. The World no-ops out-of-range slots and
+    // single-weapon cycles, so we can emit freely.
+    for (key, slot) in [
+        (KeyCode::Key1, 0),
+        (KeyCode::Key2, 1),
+        (KeyCode::Key3, 2),
+        (KeyCode::Key4, 3),
+    ] {
+        if is_key_pressed(key) {
+            cmds.push(Command::SwitchWeapon { slot });
+        }
+    }
+    let wheel = mouse_wheel().1;
+    if is_key_pressed(KeyCode::E) || wheel < 0.0 {
+        cmds.push(Command::CycleWeapon { dir: 1 });
+    }
+    if is_key_pressed(KeyCode::Q) || wheel > 0.0 {
+        cmds.push(Command::CycleWeapon { dir: -1 });
+    }
+
     cmds
 }
 

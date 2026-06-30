@@ -240,10 +240,10 @@ impl DebugUi {
         if ui.button("equip selected · arm the player").clicked()
             && let Some(base) = content.bases.get(self.weapon_base)
         {
-            // Routes through the real loadout path: sets `world.equipped` and
+            // Replaces the active rack slot (so tuning doesn't pile up dupes) and
             // loads the weapon's stats into these very sliders (the fire path's
             // read surface), so equip → tune → watch TTK move still works.
-            world.equip_base(&base.id, content);
+            world.debug_equip_base(&base.id, content);
         }
 
         ui.add_space(4.0);
@@ -259,7 +259,7 @@ impl DebugUi {
         // Archetype fire-pattern knobs — shown only for the profile the equipped
         // weapon actually uses (seeded from the weapon on equip, live here). The
         // fire path reads these tunables, so a drag retunes the next shot.
-        match world.equipped.as_ref().map(|e| e.profile) {
+        match world.equipped().map(|e| e.profile) {
             Some(FireProfile::Spread { .. }) => {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("shotgun spread").weak().size(11.5));

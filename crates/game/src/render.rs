@@ -406,7 +406,7 @@ pub fn draw_hud(world: &World) {
     );
     draw_text(&stats, 12.0, 56.0, 22.0, Color::new(0.85, 0.85, 0.85, 1.0));
 
-    if let Some(eq) = &world.equipped {
+    if let Some(eq) = world.equipped() {
         let tag = match eq.profile {
             FireProfile::Spread { .. } => {
                 format!("   {}-pellet spread", world.tunables.spread_pellets)
@@ -426,13 +426,33 @@ pub fn draw_hud(world: &World) {
             18.0,
             Color::new(0.80, 0.80, 0.62, 1.0),
         );
+
+        // Weapon wheel: list the rack, active slot marked, when more than one.
+        let rack = world.loadout();
+        if rack.len() > 1 {
+            let line: Vec<String> = rack
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let mark = if i == world.active_slot() { "*" } else { "" };
+                    format!("{}:{}{mark}", i + 1, w.name)
+                })
+                .collect();
+            draw_text(
+                &line.join("  "),
+                12.0,
+                98.0,
+                17.0,
+                Color::new(0.62, 0.66, 0.55, 1.0),
+            );
+        }
     }
 
     if let Some(last) = &world.last_pickup {
         draw_text(
             &format!("picked up: {last}"),
             12.0,
-            100.0,
+            120.0,
             18.0,
             Color::new(0.7, 0.85, 0.7, 1.0),
         );
@@ -440,7 +460,7 @@ pub fn draw_hud(world: &World) {
 
     // Controls hint, bottom.
     draw_text(
-        "WASD / L-stick move  |  mouse / R-stick aim  |  LMB / Space / RT shoot  |  ESC quit",
+        "WASD move  |  mouse aim  |  LMB / Space shoot  |  1-4 / wheel / Q-E weapon  |  ESC quit",
         12.0,
         screen_height() - 16.0,
         18.0,

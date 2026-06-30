@@ -258,7 +258,15 @@ async fn main() {
         let block_fire = false;
 
         for cmd in input::collect_input(aim.dir, &pad) {
-            if block_fire && matches!(cmd, Command::Fire { .. }) {
+            // Swallow fire and weapon-switch input while the cursor is over the
+            // debug panel — so clicking a button or scrolling a slider doesn't
+            // also shoot or cycle weapons.
+            if block_fire
+                && matches!(
+                    cmd,
+                    Command::Fire { .. } | Command::SwitchWeapon { .. } | Command::CycleWeapon { .. }
+                )
+            {
                 continue;
             }
             world.apply(cmd, dt);
