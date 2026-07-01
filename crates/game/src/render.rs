@@ -24,6 +24,10 @@ const WALL_HEIGHT: f32 = 1.6;
 const RENDER_RADIUS: f32 = 30.0;
 /// Player cube half-extent (render only; collision uses point tests in core).
 const PLAYER_HALF: f32 = 0.35;
+/// The two floor-checker shades. Kept close so the grid reads as a subtle
+/// movement reference, not a distracting chessboard.
+const FLOOR_DARK: Color = Color::new(0.07, 0.07, 0.09, 1.0);
+const FLOOR_LIGHT: Color = Color::new(0.11, 0.11, 0.14, 1.0);
 
 /// Draw the full 3D scene: ground plane, extruded wall cubes (distance
 /// culled), enemies, ground drops (with loot beams), player, projectiles,
@@ -32,22 +36,41 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
     let map = &world.map;
     let (px, py) = (world.player.x, world.player.y);
 
-    // Floor: one big plane under everything. `size` is the half-extent, so
-    // it spans the full map when centered at the middle.
+    // Floor: one big dark plane under everything (the "dark" checker squares +
+    // a fallback for distant tiles). `size` is the half-extent, so it spans the
+    // full map when centered at the middle.
     let fw = map.width as f32;
     let fh = map.height as f32;
     draw_plane(
         vec3(fw * 0.5, 0.0, fh * 0.5),
         vec2(fw * 0.5, fh * 0.5),
         None,
-        Color::new(0.07, 0.07, 0.09, 1.0),
+        FLOOR_DARK,
     );
+    let r2 = RENDER_RADIUS * RENDER_RADIUS;
+
+    // Checker: the "light" squares as single-tile planes, drawn only near the
+    // player and lifted a hair so they don't z-fight the base plane. The
+    // alternating grid gives a static reference against which entity movement
+    // reads clearly (BoxHead's floor tiling).
+    for ty in 0..map.height {
+        for tx in 0..map.width {
+            if (tx + ty) % 2 != 0 {
+                continue;
+            }
+            let cx = tx as f32 + 0.5;
+            let cz = ty as f32 + 0.5;
+            if (cx - px).powi(2) + (cz - py).powi(2) > r2 {
+                continue;
+            }
+            draw_plane(vec3(cx, 0.005, cz), vec2(0.5, 0.5), None, FLOOR_LIGHT);
+        }
+    }
 
     // Walls: extruded cubes, only near the player. Cube + darker wireframe
     // gives the crisp boxy edge BoxHead reads by.
     let wall = Color::new(0.20, 0.20, 0.24, 1.0);
     let edge = Color::new(0.05, 0.05, 0.07, 1.0);
-    let r2 = RENDER_RADIUS * RENDER_RADIUS;
     for ty in 0..map.height {
         for tx in 0..map.width {
             if !matches!(map.tile_at(tx, ty), Tile::Wall) {
