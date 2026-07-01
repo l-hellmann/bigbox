@@ -11,7 +11,7 @@
 use h2b_core::progression::level_for_total_xp;
 use h2b_core::Rarity;
 use h2b_game::{Content, EnemyInstance, Explosion, FireProfile, LootDrop, Projectile, World};
-use h2b_procgen::Tile;
+use h2b_procgen::{Map, Tile};
 use macroquad::prelude::*;
 
 /// How tall wall cubes stand, in world units (= tiles). Tall enough to read
@@ -28,17 +28,37 @@ const PLAYER_HALF: f32 = 0.35;
 /// movement reference, not a distracting chessboard.
 const FLOOR_DARK: Color = Color::new(0.07, 0.07, 0.09, 1.0);
 const FLOOR_LIGHT: Color = Color::new(0.11, 0.11, 0.14, 1.0);
+/// Radians of walk-cycle phase per tile moved — how fast limbs swing relative to
+/// travel. Higher = quicker steps. Phase is `(x + y) * WALK_FREQ`.
+const WALK_FREQ: f32 = 6.0;
+
+/// Procedurally-generated render assets (built once, reused every frame). Kept
+/// separate from `&World` so the renderer stays a pure state consumer and the
+/// textures live outside the headless library.
+pub struct RenderAssets {
+    /// A small tileable grain, sampled per floor tile and tinted per checker
+    /// square — gives the floor grit without a flat-colour look.
+    floor: Texture2D,
+}
+
+impl RenderAssets {
+    /// Generate all textures. Call once after the GL context exists (i.e. inside
+    /// the macroquad `main`, before the loop).
+    pub fn load() -> Self {
+        Self { floor: make_floor_texture() }
+    }
+}
 
 /// Draw the full 3D scene: ground plane, extruded wall cubes (distance
 /// culled), enemies, ground drops (with loot beams), player, projectiles,
 /// and the aim line/marker.
-pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
+pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>, assets: &RenderAssets) {
     let map = &world.map;
     let (px, py) = (world.player.x, world.player.y);
 
-    // Floor: one big dark plane under everything (the "dark" checker squares +
-    // a fallback for distant tiles). `size` is the half-extent, so it spans the
-    // full map when centered at the middle.
+    // Floor: one big dark plane under everything, as a fallback for tiles beyond
+    // the textured near-field. `size` is the half-extent, so it spans the full
+    // map when centered at the middle.
     let fw = map.width as f32;
     let fh = map.height as f32;
     draw_plane(
@@ -49,21 +69,19 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
     );
     let r2 = RENDER_RADIUS * RENDER_RADIUS;
 
-    // Checker: the "light" squares as single-tile planes, drawn only near the
-    // player and lifted a hair so they don't z-fight the base plane. The
-    // alternating grid gives a static reference against which entity movement
-    // reads clearly (BoxHead's floor tiling).
+    // Checkered, textured floor near the player: each tile is a single plane
+    // (lifted a hair off the base to avoid z-fight) carrying the grain texture,
+    // tinted dark/light by `(tx+ty)` parity. The alternating grid + grain give a
+    // static reference against which entity movement reads clearly.
     for ty in 0..map.height {
         for tx in 0..map.width {
-            if (tx + ty) % 2 != 0 {
-                continue;
-            }
             let cx = tx as f32 + 0.5;
             let cz = ty as f32 + 0.5;
             if (cx - px).powi(2) + (cz - py).powi(2) > r2 {
                 continue;
             }
-            draw_plane(vec3(cx, 0.005, cz), vec2(0.5, 0.5), None, FLOOR_LIGHT);
+            let tint = if (tx + ty) % 2 == 0 { FLOOR_LIGHT } else { FLOOR_DARK };
+            draw_plane(vec3(cx, 0.005, cz), vec2(0.5, 0.5), Some(&assets.floor), tint);
         }
     }
 
@@ -88,34 +106,42 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
         }
     }
 
+    // Props: sparse barrels / crates / rubble scattered deterministically from
+    // the map seed — scene dressing, not collision geometry (render-only).
+    draw_props(map, px, py, r2);
+
     // Drops: a small cube plus a vertical rarity-colored loot beam so they're
     // spottable across the room.
     for d in &world.drops {
         draw_drop(d);
     }
 
-    // Enemies: per-archetype colored cubes sitting on the floor, yawed to face
+    // Enemies: per-archetype box-figures sitting on the floor, yawed to face
     // their actual movement heading (`EnemyInstance.facing`).
     for e in &world.enemies {
         draw_enemy(e, content);
     }
 
-    // Player: a green cube facing the aim direction, with a bright front face so
-    // the heading reads. Facing derives from the cursor's ground hit; when
-    // there's no aim (degenerate), it defaults to +Z ("north").
-    let pc = vec3(px, PLAYER_HALF, py);
-    let psize = vec3(PLAYER_HALF * 2.0, PLAYER_HALF * 2.0, PLAYER_HALF * 2.0);
+    // Player: a green box-figure holding a gun, facing the aim direction.
+    // Facing derives from the cursor's ground hit; when there's no aim
+    // (degenerate), it defaults to +Z ("north").
     let pyaw = aim_hit
         .map(|h| (h.x - px, h.z - py))
         .filter(|(dx, dz)| dx * dx + dz * dz > 1e-6)
         .map_or(0.0, |(dx, dz)| dx.atan2(dz));
-    draw_facing_cube(
-        pc,
-        psize,
+    draw_box_figure(
+        vec3(px, 0.0, py),
         pyaw,
-        Color::new(0.35, 0.85, 0.35, 1.0),
-        Color::new(0.12, 0.40, 0.12, 1.0),
-        Color::new(0.85, 1.00, 0.55, 1.0),
+        &FigureSpec {
+            scale: PLAYER_HALF,
+            width: 1.0,
+            body: Color::new(0.32, 0.72, 0.38, 1.0),
+            head: Color::new(0.40, 0.85, 0.46, 1.0),
+            accent: Color::new(0.85, 1.00, 0.55, 1.0),
+            // Walk bob from the player's own position so it steps as it moves.
+            phase: (px + py) * WALK_FREQ,
+            gun: true,
+        },
     );
 
     // Projectiles: small glowing cubes floating at mid-height.
@@ -269,8 +295,8 @@ pub fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
             .get(e.archetype)
             .map(|a| a.id.as_str())
             .unwrap_or("?");
-        let (_, half) = enemy_visual(id);
-        let head = vec3(e.x, half * 2.0 + 0.55, e.y);
+        let (_, scale, _) = enemy_shape(id);
+        let head = vec3(e.x, figure_top(scale) + 0.5, e.y);
         let Some((sx, sy)) = world_to_screen(&view_proj, head) else {
             continue;
         };
@@ -295,7 +321,7 @@ pub fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
     // Player block — always drawn, independent of the enemy `MAX_LABELS` cap,
     // and last so it sits on top of any overlapping enemy labels.
     let p = &world.player;
-    let head = vec3(px, PLAYER_HALF * 2.0 + 0.65, py);
+    let head = vec3(px, figure_top(PLAYER_HALF) + 0.6, py);
     if let Some((sx, sy)) = world_to_screen(&view_proj, head) {
         let lines = [
             "PLAYER".to_string(),
@@ -313,47 +339,245 @@ fn draw_enemy(e: &EnemyInstance, content: &Content) {
         .get(e.archetype)
         .map(|a| a.id.as_str())
         .unwrap_or("");
-    let (color, half) = enemy_visual(id);
-    let center = vec3(e.x, half, e.y);
-    let size = vec3(half * 2.0, half * 2.0, half * 2.0);
+    let (color, scale, width) = enemy_shape(id);
     // Yaw to the enemy's actual movement heading (kept steady while stopped).
-    // Front face is a pale "eyes" panel.
-    draw_facing_cube(
-        center,
-        size,
+    // The walk phase is driven by the enemy's position so limbs step as it
+    // actually moves and freeze when it holds — the movement reference the
+    // checkered floor started.
+    draw_box_figure(
+        vec3(e.x, 0.0, e.y),
         e.facing,
-        color,
-        Color::new(0.05, 0.02, 0.02, 1.0),
-        Color::new(0.96, 0.94, 0.86, 1.0),
+        &FigureSpec {
+            scale,
+            width,
+            body: color,
+            head: lighten(color, 0.12),
+            accent: Color::new(0.90, 0.96, 0.45, 1.0), // sickly zombie eyes
+            phase: (e.x + e.y) * WALK_FREQ,
+            gun: false,
+        },
     );
     // Health bar drawn outside the yaw so it stays world-aligned (a rotating
     // bar under the fixed cam would be unreadable).
-    draw_health_bar(e, half);
+    draw_health_bar(e, scale);
 }
 
-/// Draw a solid cube (with wire edges) yawed `yaw` radians about its vertical
-/// axis so its faces turn to point along a heading, with a distinct `front`-
-/// colored panel flush on the local **+Z** face — the "which way am I looking"
-/// marker. macroquad's `draw_cube` is axis-aligned, so we push a model matrix
-/// (translate to `center`, then rotate) and draw everything at the local origin.
-fn draw_facing_cube(center: Vec3, size: Vec3, yaw: f32, body: Color, edge: Color, front: Color) {
-    // Acquire → push → drop the handle before drawing: `draw_cube` re-acquires
-    // the internal GL context itself, so we must not hold it across those calls.
+/// A boxy humanoid ("box-person") built from stacked primitives — the BoxHead
+/// silhouette. All measures scale off `scale` (≈ the old cube half-extent) so
+/// the footprint matches the previous cubes; `width` fattens the torso/arms
+/// (tanks read wide). Feet sit at `y = 0`.
+struct FigureSpec {
+    scale: f32,
+    width: f32,
+    body: Color,
+    head: Color,
+    accent: Color,
+    /// Walk-cycle phase (radians); limbs swing by `sin(phase)`, so a figure
+    /// whose phase tracks its position steps as it moves and stills when parked.
+    phase: f32,
+    /// Draw a forward gun in the right hand (the player).
+    gun: bool,
+}
+
+/// Draw a [`FigureSpec`] at ground point `ground` (feet), yawed `yaw` about the
+/// vertical so it faces its heading (front = local +Z). Everything is drawn
+/// under one pushed model matrix; callers add world-aligned overlays (health
+/// bars, labels) *outside* so they don't rotate with the body.
+fn draw_box_figure(ground: Vec3, yaw: f32, f: &FigureSpec) {
+    let s = f.scale;
+    let w = f.width;
+    let edge = Color::new(0.04, 0.03, 0.03, 1.0);
+    let swing = f.phase.sin();
+
+    draw_yawed(ground, yaw, || {
+        // Legs — shuffle fore/aft in antiphase (a cheap two-step).
+        let leg = vec3(0.42 * s, 0.75 * s, 0.5 * s);
+        let leg_y = 0.375 * s;
+        let leg_dz = swing * 0.18 * s;
+        for (side, dz) in [(-1.0_f32, leg_dz), (1.0, -leg_dz)] {
+            part(vec3(side * 0.30 * s, leg_y, dz), leg, f.body, edge);
+        }
+
+        // Torso.
+        let torso = vec3(1.0 * s * w, 0.9 * s, 0.62 * s);
+        let torso_y = 0.75 * s + 0.45 * s;
+        part(vec3(0.0, torso_y, 0.0), torso, f.body, edge);
+
+        // Arms — swing opposite the legs.
+        let arm = vec3(0.28 * s, 0.82 * s, 0.4 * s);
+        let arm_x = 0.5 * s * w + 0.2 * s;
+        for (side, dz) in [(-1.0_f32, -swing * 0.2 * s), (1.0, swing * 0.2 * s)] {
+            part(vec3(side * arm_x, torso_y - 0.02 * s, dz), arm, f.body, edge);
+        }
+
+        // Head + face (eyes on the +Z front, so the accent shows the heading).
+        let head_sz = vec3(0.64 * s, 0.6 * s, 0.62 * s);
+        let head_y = 0.75 * s + 0.9 * s + 0.3 * s;
+        part(vec3(0.0, head_y, 0.0), head_sz, f.head, edge);
+        let eye = vec3(0.14 * s, 0.14 * s, 0.06 * s);
+        let eye_z = 0.31 * s + 0.02;
+        for side in [-1.0_f32, 1.0] {
+            draw_cube(vec3(side * 0.16 * s, head_y + 0.06 * s, eye_z), eye, None, f.accent);
+        }
+
+        // Gun: a dark barrel jutting forward from the right hand.
+        if f.gun {
+            let barrel = vec3(0.16 * s, 0.16 * s, 0.9 * s);
+            let gun_col = Color::new(0.12, 0.12, 0.14, 1.0);
+            part(
+                vec3(arm_x, torso_y - 0.05 * s, 0.4 * s),
+                barrel,
+                gun_col,
+                edge,
+            );
+        }
+    });
+}
+
+/// One solid box part with its wire edge, drawn at the current model transform.
+fn part(center: Vec3, size: Vec3, fill: Color, edge: Color) {
+    draw_cube(center, size, None, fill);
+    draw_cube_wires(center, size, edge);
+}
+
+/// Run `draw` with a translate+yaw model matrix pushed (macroquad's `draw_cube`
+/// is axis-aligned). Acquire → push → drop the GL handle before drawing, since
+/// `draw_cube` re-acquires it internally and we must not hold it across.
+fn draw_yawed(center: Vec3, yaw: f32, draw: impl FnOnce()) {
     let m = Mat4::from_translation(center) * Mat4::from_rotation_y(yaw);
     unsafe { get_internal_gl() }.quad_gl.push_model_matrix(m);
-
-    draw_cube(Vec3::ZERO, size, None, body);
-    draw_cube_wires(Vec3::ZERO, size, edge);
-    // Front panel: a thin quad-cube sitting slightly proud of the +Z face so it
-    // reads as a coloured "face" and doesn't z-fight the body.
-    draw_cube(
-        vec3(0.0, 0.0, size.z * 0.5 + 0.02),
-        vec3(size.x * 0.82, size.y * 0.82, 0.05),
-        None,
-        front,
-    );
-
+    draw();
     unsafe { get_internal_gl() }.quad_gl.pop_model_matrix();
+}
+
+/// Lighten a colour toward white by `amt` (0..1) — used for the head vs body.
+fn lighten(c: Color, amt: f32) -> Color {
+    Color::new(
+        c.r + (1.0 - c.r) * amt,
+        c.g + (1.0 - c.g) * amt,
+        c.b + (1.0 - c.b) * amt,
+        c.a,
+    )
+}
+
+/// Scatter sparse decorative props on floor tiles, chosen deterministically from
+/// `(tile, map.seed)` — so the same map always dresses identically, with no
+/// stored state and no per-frame RNG. Distance-culled like the walls. Purely
+/// visual: props have no collision (a future pass could promote crates/barrels
+/// to real cover by blocking those tiles in `can_stand`).
+fn draw_props(map: &Map, px: f32, py: f32, r2: f32) {
+    for ty in 0..map.height {
+        for tx in 0..map.width {
+            if !matches!(map.tile_at(tx, ty), Tile::Floor) {
+                continue;
+            }
+            // Keep the spawn tile clear so the player never starts inside a prop.
+            if (tx, ty) == map.player_spawn {
+                continue;
+            }
+            let cx = tx as f32 + 0.5;
+            let cz = ty as f32 + 0.5;
+            if (cx - px).powi(2) + (cz - py).powi(2) > r2 {
+                continue;
+            }
+            let h = tile_hash(tx, ty, map.seed);
+            // ~1 in 17 floor tiles gets a prop.
+            if h % 17 != 0 {
+                continue;
+            }
+            match (h >> 8) % 3 {
+                0 => draw_barrel(cx, cz),
+                1 => draw_crate(cx, cz, h),
+                _ => draw_rubble(cx, cz, h),
+            }
+        }
+    }
+}
+
+/// A rusty barrel with two hazard-stripe rings (slightly proud so they don't
+/// z-fight the body).
+fn draw_barrel(cx: f32, cz: f32) {
+    let base = vec3(cx, 0.0, cz);
+    let body = Color::new(0.46, 0.26, 0.18, 1.0);
+    let ring = Color::new(0.85, 0.68, 0.20, 1.0);
+    draw_cylinder(base, 0.26, 0.28, 0.74, None, body);
+    draw_cylinder(vec3(cx, 0.20, cz), 0.29, 0.29, 0.07, None, ring);
+    draw_cylinder(vec3(cx, 0.50, cz), 0.29, 0.29, 0.07, None, ring);
+    draw_cylinder_wires(base, 0.26, 0.28, 0.74, None, Color::new(0.0, 0.0, 0.0, 1.0));
+}
+
+/// A wooden crate, size jittered a touch by the tile hash.
+fn draw_crate(cx: f32, cz: f32, h: u64) {
+    let s = 0.30 + hfrac(h) * 0.08;
+    let c = vec3(cx, s, cz);
+    let size = vec3(s * 2.0, s * 2.0, s * 2.0);
+    draw_cube(c, size, None, Color::new(0.42, 0.30, 0.18, 1.0));
+    draw_cube_wires(c, size, Color::new(0.18, 0.12, 0.06, 1.0));
+}
+
+/// A little scatter of grey rubble cubes, placed from re-mixed hash bits.
+fn draw_rubble(cx: f32, cz: f32, h: u64) {
+    let col = Color::new(0.30, 0.30, 0.34, 1.0);
+    let mut hh = h;
+    for _ in 0..3 {
+        hh = hh.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+        let ox = (hfrac(hh) - 0.5) * 0.6;
+        hh = hh.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+        let oz = (hfrac(hh) - 0.5) * 0.6;
+        let sz = 0.07 + hfrac(hh) * 0.05;
+        draw_cube(
+            vec3(cx + ox, sz, cz + oz),
+            vec3(sz * 2.0, sz * 2.0, sz * 2.0),
+            None,
+            col,
+        );
+    }
+}
+
+/// Deterministic tile hash (SplitMix64-style mix of tile coords + map seed).
+fn tile_hash(tx: u32, ty: u32, seed: u64) -> u64 {
+    let mut h = seed
+        ^ (tx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (ty as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    h
+}
+
+/// Map a hash to a fraction in `[0, 1)` — its low 16 bits.
+fn hfrac(h: u64) -> f32 {
+    (h & 0xFFFF) as f32 / 65536.0
+}
+
+/// Build a small tileable grayscale grain texture in code (no asset file). The
+/// value multiplies the per-tile tint at draw time, so it darkens/speckles the
+/// flat floor colour into something with grit. Nearest filtering keeps the
+/// pixels crisp, matching the boxy look.
+fn make_floor_texture() -> Texture2D {
+    const N: usize = 16;
+    let mut bytes = vec![0u8; N * N * 4];
+    for y in 0..N {
+        for x in 0..N {
+            let h = tile_hash(x as u32, y as u32, 0xF100_0F1E);
+            // Mostly bright with occasional darker specks → subtle grain.
+            let mut v = 0.82 + hfrac(h) * 0.18;
+            if (h >> 20) % 11 == 0 {
+                v *= 0.7;
+            }
+            let g = (v * 255.0) as u8;
+            let i = (y * N + x) * 4;
+            bytes[i] = g;
+            bytes[i + 1] = g;
+            bytes[i + 2] = g;
+            bytes[i + 3] = 255;
+        }
+    }
+    let tex = Texture2D::from_rgba8(N as u16, N as u16, &bytes);
+    tex.set_filter(FilterMode::Nearest);
+    tex
 }
 
 /// Floating health bar above a damaged enemy: a dark backing cube with a
@@ -361,15 +585,15 @@ fn draw_facing_cube(center: Vec3, size: Vec3, yaw: f32, body: Color, edge: Color
 /// taken a hit, so a fresh swarm stays clean. World-X aligned — the fixed
 /// follow-cam renders that as a horizontal bar; the fill is nudged toward the
 /// camera (+Z) so it doesn't z-fight the backing.
-fn draw_health_bar(e: &EnemyInstance, half: f32) {
+fn draw_health_bar(e: &EnemyInstance, scale: f32) {
     let max = e.combatant.max_life;
     let cur = e.combatant.current_life;
     if max <= 0.0 || cur >= max {
         return;
     }
     let frac = (cur / max).clamp(0.0, 1.0);
-    let bar_w = (half * 2.2).max(0.5);
-    let bar_y = half * 2.0 + 0.22;
+    let bar_w = (scale * 2.4).max(0.5);
+    let bar_y = figure_top(scale) + 0.16;
     let bar_h = 0.1;
     let bar_d = 0.06;
 
@@ -391,17 +615,24 @@ fn draw_health_bar(e: &EnemyInstance, half: f32) {
     );
 }
 
-/// (color, half-extent) per enemy archetype. Bigger, redder reads as tankier.
-fn enemy_visual(id: &str) -> (Color, f32) {
+/// (color, scale, torso-width) per enemy archetype. Bigger + redder reads as
+/// tankier; `width` fattens the silhouette (the fat zombie is squat and wide).
+fn enemy_shape(id: &str) -> (Color, f32, f32) {
     match id {
-        "swarm_rusher" => (Color::new(0.80, 0.50, 0.30, 1.0), 0.28),
-        "fast_zombie" => (Color::new(0.90, 0.70, 0.20, 1.0), 0.30),
-        "spitter" => (Color::new(0.50, 0.80, 0.40, 1.0), 0.34),
-        "basic_zombie" => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38),
-        "fat_zombie" => (Color::new(0.55, 0.20, 0.50, 1.0), 0.58),
-        "patient_zero" => (Color::new(0.95, 0.10, 0.10, 1.0), 0.85),
-        _ => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38),
+        "swarm_rusher" => (Color::new(0.80, 0.50, 0.30, 1.0), 0.28, 0.85),
+        "fast_zombie" => (Color::new(0.90, 0.70, 0.20, 1.0), 0.30, 0.8),
+        "spitter" => (Color::new(0.50, 0.80, 0.40, 1.0), 0.34, 1.0),
+        "basic_zombie" => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38, 1.0),
+        "fat_zombie" => (Color::new(0.55, 0.20, 0.50, 1.0), 0.52, 1.7),
+        "patient_zero" => (Color::new(0.95, 0.10, 0.10, 1.0), 0.80, 1.4),
+        _ => (Color::new(0.75, 0.25, 0.25, 1.0), 0.38, 1.0),
     }
+}
+
+/// Approximate top of a [`FigureSpec`]'s head for `scale` — where world-aligned
+/// overlays (health bar, floating labels) anchor above the figure.
+fn figure_top(scale: f32) -> f32 {
+    scale * 2.3
 }
 
 fn draw_drop(d: &LootDrop) {

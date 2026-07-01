@@ -220,6 +220,8 @@ async fn main() {
 
     // Bundled UI/HUD font (Quantico), loaded once.
     let font = ui::load_font();
+    // Procedurally-generated render textures, built once (needs the GL context).
+    let assets = render::RenderAssets::load();
 
     #[cfg(feature = "debug")]
     let mut dbg = debug::DebugUi::new();
@@ -309,7 +311,7 @@ async fn main() {
         let camera = build_camera(&world.player);
         clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
         set_camera(&camera);
-        render::draw_scene(&world, &content, aim.hit);
+        render::draw_scene(&world, &content, aim.hit, &assets);
         #[cfg(feature = "debug")]
         if dbg.show_flow() {
             render::draw_flow_field(&world);
