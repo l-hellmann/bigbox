@@ -131,10 +131,10 @@ impl DebugUi {
         let docked = self.docked;
         egui_macroquad::ui(|ctx| {
             if docked {
-                // Pinned to the right edge, full window height. `resizable` lets
-                // you widen it.
-                egui::SidePanel::right("debug_panel")
-                    .default_width(300.0)
+                // Pinned to the bottom edge, full window width. `resizable` lets
+                // you drag it taller; the body scrolls if it overflows.
+                egui::TopBottomPanel::bottom("debug_panel")
+                    .default_height(300.0)
                     .resizable(true)
                     .show(ctx, |ui| {
                         self.panel_body(ui, world, content, cursor_tile, pad_diag)
