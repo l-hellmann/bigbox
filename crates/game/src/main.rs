@@ -218,7 +218,7 @@ async fn main() {
     let content = load_content();
     let mut world = new_world(level, seed, &content);
 
-    // Bundled UI/HUD font (JetBrains Mono), loaded once.
+    // Bundled UI/HUD font (Quantico), loaded once.
     let font = ui::load_font();
 
     #[cfg(feature = "debug")]

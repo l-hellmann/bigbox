@@ -21,12 +21,12 @@ const TEXT: Color = Color::new(0.88, 0.90, 0.92, 1.0);
 const TEXT_DIM: Color = Color::new(0.55, 0.58, 0.62, 1.0);
 const ACTIVE_BORDER: Color = Color::new(0.55, 0.95, 0.60, 1.0);
 
-/// Load the bundled UI font (JetBrains Mono, SIL OFL 1.1 — see
-/// `assets/fonts/OFL.txt`). Embedded via `include_bytes!` so it needs no runtime
-/// file read and works identically on native and wasm (matching the content
-/// crate's `include_str!` approach).
+/// Load the bundled UI font (Quantico, SIL OFL 1.1 — see
+/// `assets/fonts/quantico/OFL.txt`). Embedded via `include_bytes!` so it needs
+/// no runtime file read and works identically on native and wasm (matching the
+/// content crate's `include_str!` approach).
 pub fn load_font() -> Font {
-    load_ttf_font_from_bytes(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"))
+    load_ttf_font_from_bytes(include_bytes!("../assets/fonts/quantico/Quantico-Regular.ttf"))
         .expect("bundled UI font should parse")
 }
 
