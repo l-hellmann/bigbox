@@ -77,6 +77,12 @@ pub const MAX_ENEMIES: usize = 40;
 /// Minimum spawn distance (tiles, flow-field steps) from the player so a wave
 /// never materializes on top of them.
 pub const SPAWN_MIN_DISTANCE: u32 = 12;
+/// Upper bound on distinct enemy archetypes the per-type wave-composition
+/// weights ([`Tunables::spawn_weights`]) address. A fixed size keeps `Tunables`
+/// `Copy`; the v1 roster (6) sits well under it. Archetypes past this index just
+/// aren't weight-addressable (they fall into the uniform default) — bump it if
+/// the roster ever grows past 12.
+pub const MAX_SPAWN_ARCHETYPES: usize = 12;
 /// Probability a kill drops an item at all. Rarity is rolled separately.
 pub const DROP_CHANCE: f32 = 0.35;
 
@@ -123,6 +129,13 @@ pub struct Tunables {
     pub spawn_batch: usize,
     pub max_enemies: usize,
     pub spawn_min_distance: u32,
+    /// Per-archetype relative spawn weight (index = archetype index into
+    /// `Content::enemies`). Each auto-wave draws its batch from this weighted
+    /// mix; a `0` weight means "never spawn this type". **All-zero (the default)
+    /// means uniform** — every archetype equally likely — so shipping behaviour
+    /// is unchanged until the debug UI dials in a composition. Only the first
+    /// [`MAX_SPAWN_ARCHETYPES`] archetypes are addressable.
+    pub spawn_weights: [u32; MAX_SPAWN_ARCHETYPES],
     pub drop_chance: f32,
     /// Global multiplier on every enemy's per-archetype move speed. The cheap
     /// lever for tuning swarm convergence / pathing pressure without touching
@@ -175,6 +188,7 @@ impl Default for Tunables {
             spawn_batch: SPAWN_BATCH,
             max_enemies: MAX_ENEMIES,
             spawn_min_distance: SPAWN_MIN_DISTANCE,
+            spawn_weights: [0; MAX_SPAWN_ARCHETYPES],
             drop_chance: DROP_CHANCE,
             enemy_speed_mult: 1.0,
             sight_range: 12.0,
@@ -1234,7 +1248,7 @@ impl World {
         let mut rng = self.next_event_rng();
         let points = pick_spawn_points(&mut rng, &self.flow, budget, self.tunables.spawn_min_distance);
         for (tx, ty) in points {
-            let idx = rng.gen_range(0..content.enemies.len());
+            let idx = pick_weighted_archetype(&mut rng, &self.tunables.spawn_weights, content.enemies.len());
             self.push_enemy(idx, tx as f32 + 0.5, ty as f32 + 0.5, content);
         }
     }
@@ -1469,6 +1483,33 @@ pub fn archetype_speed(id: &str) -> f32 {
         "fat_zombie" => 1.8,
         _ => 3.0,
     }
+}
+
+/// Pick an archetype index in `0..n` for a wave spawn, biased by `weights`
+/// (index = archetype). Weight `0` excludes a type. When every addressable
+/// weight is zero — the default — it falls back to a **uniform** pick over all
+/// `n` archetypes, so behaviour is unchanged until a composition is dialled in.
+/// Only the first `min(n, weights.len())` archetypes are weight-addressable.
+fn pick_weighted_archetype<R: Rng + ?Sized>(rng: &mut R, weights: &[u32], n: usize) -> usize {
+    debug_assert!(n > 0, "caller guards against an empty roster");
+    let m = n.min(weights.len());
+    let total: u32 = weights[..m].iter().sum();
+    if total == 0 {
+        // No composition set → uniform over the whole roster (legacy behaviour).
+        return rng.gen_range(0..n);
+    }
+    let mut r = rng.gen_range(0..total);
+    for (i, &w) in weights[..m].iter().enumerate() {
+        if w == 0 {
+            continue;
+        }
+        if r < w {
+            return i;
+        }
+        r -= w;
+    }
+    // Unreachable given `r < total`, but return a valid index rather than panic.
+    m - 1
 }
 
 /// Weighted rarity roll matching CLAUDE.md's drop curve (per 1000): Legendary
@@ -2210,6 +2251,38 @@ mod tests {
         assert!(t.auto_spawn);
         assert!(!t.god_mode);
         assert_eq!(t.enemy_speed_mult, 1.0);
+        // Default composition is all-zero ⇒ uniform spawns.
+        assert_eq!(t.spawn_weights, [0; MAX_SPAWN_ARCHETYPES]);
+    }
+
+    #[test]
+    fn zero_weights_pick_uniformly_across_the_roster() {
+        // All-zero weights → any archetype in 0..n can come up.
+        let weights = [0u32; MAX_SPAWN_ARCHETYPES];
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut seen = [false; 3];
+        for _ in 0..200 {
+            seen[pick_weighted_archetype(&mut rng, &weights, 3)] = true;
+        }
+        assert_eq!(seen, [true, true, true]);
+    }
+
+    #[test]
+    fn weights_exclude_zero_types_and_bias_the_rest() {
+        // Only archetype 1 has weight → it's the only one ever picked.
+        let mut weights = [0u32; MAX_SPAWN_ARCHETYPES];
+        weights[1] = 5;
+        let mut rng = StdRng::seed_from_u64(7);
+        for _ in 0..100 {
+            assert_eq!(pick_weighted_archetype(&mut rng, &weights, 4), 1);
+        }
+        // A never-weighted type (index 3) stays out even with others weighted.
+        weights[0] = 3;
+        let mut rng = StdRng::seed_from_u64(9);
+        for _ in 0..200 {
+            let idx = pick_weighted_archetype(&mut rng, &weights, 4);
+            assert!(idx == 0 || idx == 1, "only weighted types spawn, got {idx}");
+        }
     }
 
     #[cfg(feature = "debug")]

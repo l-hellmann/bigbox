@@ -20,10 +20,6 @@ use macroquad::prelude::*;
 /// hand, and check into a presets folder.
 const TUNABLES_PATH: &str = "head2box-tunables.ron";
 
-/// Accent used for the flat-section headers — the visual marker that a section
-/// is pinned/always-on rather than folded behind a triangle.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x7a, 0xc8);
-
 pub struct DebugUi {
     visible: bool,
     archetype: usize,
@@ -46,9 +42,16 @@ pub struct DebugUi {
     show_flow: bool,
     /// Draw floating Enemy/Combatant + player stat blocks (read by the renderer).
     show_entity_stats: bool,
-    /// Panel layout: `true` = docked to the right edge, `false` = a free-floating
-    /// movable window. Toggled by the checkbox in the panel header.
-    docked: bool,
+    /// Which tool windows are open. The launcher's checkboxes and each window's
+    /// close [x] both drive these (kept in sync via a local, see [`Self::run`]).
+    win_combat: bool,
+    win_spawning: bool,
+    win_loot: bool,
+    win_movement: bool,
+    win_level: bool,
+    win_controller: bool,
+    win_actions: bool,
+    win_file: bool,
     /// Last export/import outcome, shown under the buttons.
     status: String,
 }
@@ -75,7 +78,16 @@ impl DebugUi {
             arena_pillars: true,
             show_flow: false,
             show_entity_stats: false,
-            docked: true,
+            // All tool windows start closed; open them on demand from the
+            // launcher checkboxes.
+            win_combat: false,
+            win_spawning: false,
+            win_loot: false,
+            win_movement: false,
+            win_level: false,
+            win_controller: false,
+            win_actions: false,
+            win_file: false,
             status: String::new(),
         }
     }
@@ -128,59 +140,103 @@ impl DebugUi {
         });
 
         let mut wants_pointer = false;
-        let docked = self.docked;
         egui_macroquad::ui(|ctx| {
-            if docked {
-                // Pinned to the bottom edge, full window width. `resizable` lets
-                // you drag it taller; the body scrolls if it overflows.
-                egui::TopBottomPanel::bottom("debug_panel")
-                    .default_height(300.0)
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        self.panel_body(ui, world, content, cursor_tile, pad_diag)
-                    });
-            } else {
-                // Free-floating, movable window.
-                egui::Window::new("debug · tuning")
-                    .default_width(300.0)
-                    .default_pos([20.0, 20.0])
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        self.panel_body(ui, world, content, cursor_tile, pad_diag)
-                    });
-            }
-            // Read after the panel is built so it reflects this frame's
-            // interaction (used to suppress firing through the panel).
+            // Launcher: always-on compact window with god mode, the per-tool
+            // open toggles, and the live stats footer.
+            egui::Window::new("debug (F1)")
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+                .default_width(220.0)
+                .show(ctx, |ui| self.launcher_body(ui, world));
+
+            // Tool windows — each renders only when its open bool is set, and its
+            // own close [x] clears that bool. `window()` copies the bool to a
+            // local for `.open()` so we don't borrow `self` twice. The `slot`
+            // index cascades their initial position out from beside the launcher.
+            self.window(ctx, 0, "Weapon & Combat", Self::win_combat_get, |s, ui| {
+                s.loadout_section(ui, world, content)
+            });
+            self.window(ctx, 1, "Spawning", Self::win_spawning_get, |s, ui| {
+                s.spawning_section(ui, world, content, cursor_tile)
+            });
+            self.window(ctx, 2, "Loot", Self::win_loot_get, |s, ui| {
+                s.loot_section(ui, world, content, cursor_tile)
+            });
+            self.window(ctx, 3, "Movement / pathing", Self::win_movement_get, |_s, ui| {
+                Self::movement_body(ui, world)
+            });
+            self.window(ctx, 4, "Level / viz", Self::win_level_get, |s, ui| {
+                s.level_body(ui, world)
+            });
+            self.window(ctx, 5, "Controller", Self::win_controller_get, |_s, ui| {
+                controller_body(ui, pad_diag)
+            });
+            self.window(ctx, 6, "World actions", Self::win_actions_get, |_s, ui| {
+                Self::actions_body(ui, world)
+            });
+            self.window(ctx, 7, "Tunables file", Self::win_file_get, |s, ui| {
+                s.file_body(ui, world)
+            });
+
+            // Read after everything is built so it reflects this frame's
+            // interaction (used to suppress firing through a panel).
             wants_pointer = ctx.wants_pointer_input();
         });
         wants_pointer
     }
 
-    /// Shared panel contents for both docked and floating modes: header with the
-    /// dock toggle, then the scrolling widget stack.
-    fn panel_body(
+    // Field accessors so `window()` can address an open-bool generically without
+    // a borrow-checker fight (it copies via the getter, writes back via the ptr).
+    fn win_combat_get(&mut self) -> &mut bool { &mut self.win_combat }
+    fn win_spawning_get(&mut self) -> &mut bool { &mut self.win_spawning }
+    fn win_loot_get(&mut self) -> &mut bool { &mut self.win_loot }
+    fn win_movement_get(&mut self) -> &mut bool { &mut self.win_movement }
+    fn win_level_get(&mut self) -> &mut bool { &mut self.win_level }
+    fn win_controller_get(&mut self) -> &mut bool { &mut self.win_controller }
+    fn win_actions_get(&mut self) -> &mut bool { &mut self.win_actions }
+    fn win_file_get(&mut self) -> &mut bool { &mut self.win_file }
+
+    /// Render one collapsible/closable tool window. `open` selects the backing
+    /// bool; `body` fills it. The open bool is copied to a local for egui's
+    /// `.open()` (its close [x] toggles the local), then written back — so the
+    /// body closure is free to borrow `self` without aliasing the bool.
+    fn window(
         &mut self,
-        ui: &mut egui::Ui,
-        world: &mut World,
-        content: &Content,
-        cursor_tile: Option<(f32, f32)>,
-        pad_diag: &crate::PadDiag,
+        ctx: &egui::Context,
+        slot: usize,
+        title: &str,
+        open: fn(&mut Self) -> &mut bool,
+        body: impl FnOnce(&mut Self, &mut egui::Ui),
     ) {
-        ui.horizontal(|ui| {
-            ui.heading("debug · tuning  (F1)");
-            ui.checkbox(&mut self.docked, "docked");
-        });
-        // `drag_to_scroll(false)`: otherwise a click with any slight cursor
-        // movement (common on a trackpad) is taken as a scroll-drag and the
-        // button click is dropped.
-        egui::ScrollArea::vertical()
-            .drag_to_scroll(false)
-            .show(ui, |ui| {
-                self.contents(ui, world, content, cursor_tile, pad_diag);
-            });
+        let mut is_open = *open(self);
+        if is_open {
+            // Cascade the default position out to the *left* of the top-right
+            // launcher so a freshly-opened tool lands near it (title bar
+            // reachable, fully on-screen) instead of egui's centre-stack. Only
+            // applies until the user drags it — egui then remembers the moved
+            // position by id. Width 300; launcher occupies ~220 at the right edge.
+            let sr = ctx.screen_rect();
+            let pos = [
+                sr.right() - 540.0 - slot as f32 * 24.0,
+                sr.top() + 8.0 + slot as f32 * 28.0,
+            ];
+            egui::Window::new(title)
+                .open(&mut is_open)
+                .default_pos(pos)
+                .default_width(300.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    // `drag_to_scroll(false)`: a click with slight cursor drift
+                    // (common on a trackpad) would otherwise scroll-drag and eat
+                    // the button click.
+                    egui::ScrollArea::vertical()
+                        .drag_to_scroll(false)
+                        .show(ui, |ui| body(self, ui));
+                });
+        }
+        *open(self) = is_open;
     }
 
-    /// Paint the panel. Separate from [`run`] so the caller controls draw
+    /// Paint the windows. Separate from [`run`] so the caller controls draw
     /// ordering (egui goes on top, after the 2D HUD).
     pub fn draw(&self) {
         if self.visible {
@@ -188,67 +244,30 @@ impl DebugUi {
         }
     }
 
-    fn contents(
-        &mut self,
-        ui: &mut egui::Ui,
-        world: &mut World,
-        content: &Content,
-        cursor_tile: Option<(f32, f32)>,
-        pad_diag: &crate::PadDiag,
-    ) {
-        if self.docked {
-            // The bottom dock is wide and short, so put each flat section in its
-            // own column (all next to each other), with god mode on a full-width
-            // row above and the folded set-and-forget sections as the last column.
-            ui.add_space(2.0);
-            ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
-            ui.columns(4, |cols| {
-                self.loadout_section(&mut cols[0], world, content);
-                self.spawning_section(&mut cols[1], world, content, cursor_tile);
-                self.loot_section(&mut cols[2], world, content, cursor_tile);
-                self.col_misc(&mut cols[3], world, pad_diag);
-            });
-        } else {
-            // Floating window: a single vertical stack.
-            self.col_combat(ui, world, content);
-            self.col_spawn_loot(ui, world, content, cursor_tile);
-            self.col_misc(ui, world, pad_diag);
-        }
-    }
-
-    /// Column group: god mode + weapon/combat loadout.
-    fn col_combat(&mut self, ui: &mut egui::Ui, world: &mut World, content: &Content) {
-        // Pinned at the top: god mode is toggled constantly while testing.
+    /// The launcher window body: god mode, a grid of tool-window toggles, and the
+    /// live stats footer.
+    fn launcher_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
         ui.add_space(2.0);
         ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
-        self.loadout_section(ui, world, content);
-    }
-
-    /// Column group: enemy spawning + loot dropping.
-    fn col_spawn_loot(
-        &mut self,
-        ui: &mut egui::Ui,
-        world: &mut World,
-        content: &Content,
-        cursor_tile: Option<(f32, f32)>,
-    ) {
-        self.spawning_section(ui, world, content, cursor_tile);
-        self.loot_section(ui, world, content, cursor_tile);
-    }
-
-    /// Column group: the folded set-and-forget sections + the stats footer.
-    fn col_misc(&mut self, ui: &mut egui::Ui, world: &mut World, pad_diag: &crate::PadDiag) {
-        ui.add_space(8.0);
-        egui::CollapsingHeader::new("movement / pathing")
-            .show(ui, |ui| Self::movement_body(ui, world));
-        egui::CollapsingHeader::new("level / map")
-            .show(ui, |ui| self.level_body(ui, world));
-        controller_section(ui, pad_diag);
-        egui::CollapsingHeader::new("world actions")
-            .show(ui, |ui| Self::actions_body(ui, world));
-        egui::CollapsingHeader::new("tunables file")
-            .show(ui, |ui| self.file_body(ui, world));
-
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("WINDOWS").weak().size(10.5));
+        egui::Grid::new("window_toggles")
+            .num_columns(2)
+            .spacing([12.0, 3.0])
+            .show(ui, |ui| {
+                ui.checkbox(&mut self.win_combat, "Combat");
+                ui.checkbox(&mut self.win_spawning, "Spawning");
+                ui.end_row();
+                ui.checkbox(&mut self.win_loot, "Loot");
+                ui.checkbox(&mut self.win_movement, "Movement");
+                ui.end_row();
+                ui.checkbox(&mut self.win_level, "Level / viz");
+                ui.checkbox(&mut self.win_controller, "Controller");
+                ui.end_row();
+                ui.checkbox(&mut self.win_actions, "Actions");
+                ui.checkbox(&mut self.win_file, "Tunables file");
+                ui.end_row();
+            });
         Self::stats_footer(ui, world);
     }
 
@@ -256,8 +275,6 @@ impl DebugUi {
     /// weapon loads its stats into these very sliders, and the readout reflects
     /// them against the manual-spawn archetype — equip, tune, watch TTK move.
     fn loadout_section(&mut self, ui: &mut egui::Ui, world: &mut World, content: &Content) {
-        flat_header(ui, "Weapon & Combat", "loadout · feel");
-
         // Weapon picker — weapon-slot bases only.
         let weapons: Vec<usize> = content
             .bases
@@ -377,8 +394,6 @@ impl DebugUi {
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
     ) {
-        flat_header(ui, "Spawning", "auto · manual");
-
         let t = &mut world.tunables;
         ui.checkbox(&mut t.auto_spawn, "auto-spawn waves");
         ui.add(egui::Slider::new(&mut t.spawn_interval, 0.2..=15.0).text("interval s"));
@@ -386,6 +401,27 @@ impl DebugUi {
         ui.add(egui::Slider::new(&mut t.max_enemies, 1..=200).text("max enemies"));
         ui.add(egui::Slider::new(&mut t.spawn_min_distance, 1..=40).text("min distance"));
         ui.add(egui::Slider::new(&mut t.drop_chance, 0.0..=1.0).text("drop chance"));
+
+        // Per-archetype wave composition. Each wave draws its batch from these
+        // relative weights (0 = never spawn that type). All-zero ⇒ uniform, so
+        // the buttons make it easy to get back to shipping behaviour.
+        subhead(ui, "wave composition (weights)");
+        let n = content.enemies.len().min(h2b_game::MAX_SPAWN_ARCHETYPES);
+        for i in 0..n {
+            let name = content.enemies[i].id.as_str();
+            ui.add(egui::Slider::new(&mut world.tunables.spawn_weights[i], 0..=10).text(name));
+        }
+        ui.horizontal(|ui| {
+            if ui.button("uniform (clear)").clicked() {
+                world.tunables.spawn_weights = [0; h2b_game::MAX_SPAWN_ARCHETYPES];
+            }
+            if ui.button("all ×1").clicked() {
+                world.tunables.spawn_weights = [0; h2b_game::MAX_SPAWN_ARCHETYPES];
+                for w in world.tunables.spawn_weights.iter_mut().take(n) {
+                    *w = 1;
+                }
+            }
+        });
 
         subhead(ui, "manual");
         let current = content
@@ -441,8 +477,6 @@ impl DebugUi {
         content: &Content,
         cursor_tile: Option<(f32, f32)>,
     ) {
-        flat_header(ui, "Loot", "drop items");
-
         let base_label = if self.drop_base == 0 {
             "(random)"
         } else {
@@ -600,30 +634,6 @@ impl DebugUi {
     }
 }
 
-/// Header for a pinned flat section: an accent bar + uppercase title, with an
-/// optional right-aligned hint. The visual counterpart to a `CollapsingHeader`'s
-/// triangle — "always-on, primary" vs. "folded, secondary".
-fn flat_header(ui: &mut egui::Ui, title: &str, hint: &str) {
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 15.0), egui::Sense::hover());
-        ui.painter().rect_filled(bar, 2.0, ACCENT);
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(title.to_uppercase())
-                .strong()
-                .size(12.5)
-                .color(egui::Color32::from_gray(238)),
-        );
-        if !hint.is_empty() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(hint).weak().size(11.0));
-            });
-        }
-    });
-    ui.add_space(2.0);
-}
-
 /// A minor divider label inside a section (e.g. "manual" within Spawning).
 fn subhead(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
@@ -634,66 +644,62 @@ fn subhead(ui: &mut egui::Ui, text: &str) {
 /// Live controller diagnostics — surfaces whether gilrs sees a pad, its SDL
 /// mapping (the usual "connected but dead" culprit when missing), and live
 /// stick/trigger/button state so you can confirm inputs are reaching the game.
-fn controller_section(ui: &mut egui::Ui, diag: &crate::PadDiag) {
-    egui::CollapsingHeader::new("controller")
-        .default_open(false)
-        .show(ui, |ui| {
-            if !diag.initialized {
-                ui.colored_label(egui::Color32::RED, "gilrs failed to initialize");
-                return;
-            }
-            if diag.pads.is_empty() {
-                ui.colored_label(
-                    egui::Color32::YELLOW,
-                    "no gamepad detected — gilrs sees 0 devices",
-                );
-                ui.label("(on macOS, Xbox controllers over USB use a proprietary");
-                ui.label(" protocol IOKit/HID can't read — try Bluetooth pairing)");
-                return;
-            }
-            for (i, p) in diag.pads.iter().enumerate() {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, format!("[{i}] {}", p.name));
-                let mapped = !p.mapping.starts_with("UNMAPPED");
-                ui.colored_label(
-                    if mapped { egui::Color32::GRAY } else { egui::Color32::YELLOW },
-                    format!("  mapping: {}", p.mapping),
-                );
-                ui.label(format!("  power: {}", p.power));
-                ui.label(format!(
-                    "  L-stick: ({:+.2}, {:+.2})",
-                    p.left_stick.0, p.left_stick.1
-                ));
-                ui.label(format!(
-                    "  R-stick: ({:+.2}, {:+.2})",
-                    p.right_stick.0, p.right_stick.1
-                ));
-                ui.label(format!("  RT: {:.2}", p.right_trigger));
-                let btns = if p.buttons_down.is_empty() {
-                    "—".to_string()
-                } else {
-                    p.buttons_down.join(", ")
-                };
-                ui.label(format!("  buttons: {btns}"));
+fn controller_body(ui: &mut egui::Ui, diag: &crate::PadDiag) {
+    if !diag.initialized {
+        ui.colored_label(egui::Color32::RED, "gilrs failed to initialize");
+        return;
+    }
+    if diag.pads.is_empty() {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "no gamepad detected — gilrs sees 0 devices",
+        );
+        ui.label("(on macOS, Xbox controllers over USB use a proprietary");
+        ui.label(" protocol IOKit/HID can't read — try Bluetooth pairing)");
+        return;
+    }
+    for (i, p) in diag.pads.iter().enumerate() {
+        ui.colored_label(egui::Color32::LIGHT_GREEN, format!("[{i}] {}", p.name));
+        let mapped = !p.mapping.starts_with("UNMAPPED");
+        ui.colored_label(
+            if mapped { egui::Color32::GRAY } else { egui::Color32::YELLOW },
+            format!("  mapping: {}", p.mapping),
+        );
+        ui.label(format!("  power: {}", p.power));
+        ui.label(format!(
+            "  L-stick: ({:+.2}, {:+.2})",
+            p.left_stick.0, p.left_stick.1
+        ));
+        ui.label(format!(
+            "  R-stick: ({:+.2}, {:+.2})",
+            p.right_stick.0, p.right_stick.1
+        ));
+        ui.label(format!("  RT: {:.2}", p.right_trigger));
+        let btns = if p.buttons_down.is_empty() {
+            "—".to_string()
+        } else {
+            p.buttons_down.join(", ")
+        };
+        ui.label(format!("  buttons: {btns}"));
 
-                // Raw (pre-mapping) state — the data needed to build a mapping
-                // for an unmapped pad. Move each stick/trigger and watch which
-                // raw axis code changes; press buttons to see their codes.
-                if !mapped {
-                    ui.separator();
-                    ui.colored_label(egui::Color32::LIGHT_BLUE, "  raw (for mapping):");
-                    ui.label(format!("  uuid: {}", p.uuid));
-                    for (code, val) in &p.raw_axes {
-                        ui.label(format!("    axis {code}: {val:+.2}"));
-                    }
-                    let rb = if p.raw_buttons.is_empty() {
-                        "—".to_string()
-                    } else {
-                        p.raw_buttons.join(", ")
-                    };
-                    ui.label(format!("    btn pressed: {rb}"));
-                }
+        // Raw (pre-mapping) state — the data needed to build a mapping
+        // for an unmapped pad. Move each stick/trigger and watch which
+        // raw axis code changes; press buttons to see their codes.
+        if !mapped {
+            ui.separator();
+            ui.colored_label(egui::Color32::LIGHT_BLUE, "  raw (for mapping):");
+            ui.label(format!("  uuid: {}", p.uuid));
+            for (code, val) in &p.raw_axes {
+                ui.label(format!("    axis {code}: {val:+.2}"));
             }
-        });
+            let rb = if p.raw_buttons.is_empty() {
+                "—".to_string()
+            } else {
+                p.raw_buttons.join(", ")
+            };
+            ui.label(format!("    btn pressed: {rb}"));
+        }
+    }
 }
 
 /// Swap the world onto a new map, preserving the current tunables (a `World`
