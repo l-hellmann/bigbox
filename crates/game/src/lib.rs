@@ -1242,6 +1242,43 @@ impl World {
         self.drops.clear();
     }
 
+    /// Debug: roll one loot item and drop it at `(x, y)`. `base_id = Some`
+    /// forces that base (rolled against a one-item pool); `None` rolls a random
+    /// base like a real kill. Seeded from the event RNG so debug drops stay
+    /// reproducible. No-op if the forced base is unknown or the roll fails.
+    pub fn debug_drop(
+        &mut self,
+        x: f32,
+        y: f32,
+        base_id: Option<&str>,
+        rarity: Rarity,
+        ilvl: u32,
+        content: &Content,
+    ) {
+        let mut rng = self.next_event_rng();
+        let rolled = match base_id {
+            Some(id) => {
+                let Some(base) = content.bases.iter().find(|b| b.id == id) else {
+                    return;
+                };
+                // A one-element pool forces the picker onto this base without a
+                // core change (roll_item otherwise chooses a base at random).
+                roll_item(
+                    &mut rng,
+                    std::slice::from_ref(base),
+                    &content.affixes,
+                    ilvl,
+                    rarity,
+                )
+            }
+            None => roll_item(&mut rng, &content.bases, &content.affixes, ilvl, rarity),
+        };
+        if let Ok(item) = rolled {
+            let id = self.alloc_id();
+            self.drops.push(LootDrop { id, x, y, item });
+        }
+    }
+
     /// Wake every live enemy (aggro them all) — handy for testing chase
     /// behaviour without first walking into each one's sight line.
     pub fn debug_wake_all(&mut self) {
@@ -2157,6 +2194,29 @@ mod tests {
         assert_eq!(ids.len(), w.enemies.len());
         w.debug_clear_enemies();
         assert!(w.enemies.is_empty());
+    }
+
+    #[test]
+    fn debug_drop_forces_a_base_at_a_position() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        assert!(w.drops.is_empty());
+        w.debug_drop(2.0, 3.0, Some("cannon"), Rarity::Rare, 20, &content);
+        assert_eq!(w.drops.len(), 1);
+        assert_eq!(w.drops[0].item.base, "cannon");
+        assert_eq!((w.drops[0].x, w.drops[0].y), (2.0, 3.0));
+    }
+
+    #[test]
+    fn debug_drop_random_base_and_unknown_base() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        // Random base → some weapon/armor drop lands.
+        w.debug_drop(1.0, 1.0, None, Rarity::Common, 10, &content);
+        assert_eq!(w.drops.len(), 1);
+        // Unknown forced base → no-op.
+        w.debug_drop(1.0, 1.0, Some("raygun"), Rarity::Common, 10, &content);
+        assert_eq!(w.drops.len(), 1, "unknown base drops nothing");
     }
 
     #[test]

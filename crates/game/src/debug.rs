@@ -10,7 +10,7 @@
 //! ```
 
 use egui_macroquad::egui;
-use h2b_core::{HitResult, Weapon, dps_against, time_to_kill};
+use h2b_core::{HitResult, Rarity, Weapon, dps_against, time_to_kill};
 use h2b_game::{Content, FireProfile, Tunables, World};
 use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
@@ -32,6 +32,14 @@ pub struct DebugUi {
     spawn_at_cursor: bool,
     /// Selected weapon — index into [`Content::bases`] (weapon-slot only).
     weapon_base: usize,
+    /// Loot drop: `0` = random base, else `1 + index` into [`Content::bases`].
+    drop_base: usize,
+    /// Rarity to force on a debug drop.
+    drop_rarity: Rarity,
+    /// Item level to roll a debug drop at.
+    drop_ilvl: u32,
+    /// Drop at the cursor tile (else on the player, for instant pickup).
+    drop_at_cursor: bool,
     /// Arena pillar geometry for the next "load arena".
     arena_pillars: bool,
     /// Draw the flow-field next-step arrows (read by the renderer).
@@ -60,6 +68,10 @@ impl DebugUi {
             spawn_distance: 12,
             spawn_at_cursor: false,
             weapon_base: 0,
+            drop_base: 0,
+            drop_rarity: Rarity::Rare,
+            drop_ilvl: 20,
+            drop_at_cursor: false,
             arena_pillars: true,
             show_flow: false,
             show_entity_stats: false,
@@ -192,6 +204,7 @@ impl DebugUi {
         // Flat, always-on sections — the controls touched every session.
         self.loadout_section(ui, world, content);
         self.spawning_section(ui, world, content, cursor_tile);
+        self.loot_section(ui, world, content, cursor_tile);
 
         // Folded, set-and-forget sections (collapsed by default).
         ui.add_space(8.0);
@@ -383,6 +396,71 @@ impl DebugUi {
             }
             if ui.button("wake all").clicked() {
                 world.debug_wake_all();
+            }
+        });
+    }
+
+    /// Flat: roll and drop a loot item on demand — pick a base (or random),
+    /// rarity, and ilvl, then drop it on the player (instant pickup, for filling
+    /// the rack/bag) or at the cursor (lands on the ground to walk over).
+    fn loot_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        world: &mut World,
+        content: &Content,
+        cursor_tile: Option<(f32, f32)>,
+    ) {
+        flat_header(ui, "Loot", "drop items");
+
+        let base_label = if self.drop_base == 0 {
+            "(random)"
+        } else {
+            content
+                .bases
+                .get(self.drop_base - 1)
+                .map(|b| b.name.as_str())
+                .unwrap_or("—")
+        };
+        egui::ComboBox::from_label("base")
+            .selected_text(base_label)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.drop_base, 0, "(random)");
+                for (i, b) in content.bases.iter().enumerate() {
+                    ui.selectable_value(&mut self.drop_base, i + 1, b.name.as_str());
+                }
+            });
+        egui::ComboBox::from_label("rarity")
+            .selected_text(format!("{:?}", self.drop_rarity))
+            .show_ui(ui, |ui| {
+                for r in [
+                    Rarity::Basic,
+                    Rarity::Common,
+                    Rarity::Rare,
+                    Rarity::Epic,
+                    Rarity::Legendary,
+                ] {
+                    ui.selectable_value(&mut self.drop_rarity, r, format!("{r:?}"));
+                }
+            });
+        ui.add(egui::Slider::new(&mut self.drop_ilvl, 1..=60).text("ilvl"));
+        ui.checkbox(&mut self.drop_at_cursor, "at cursor (else on the player)");
+
+        ui.horizontal(|ui| {
+            if ui.button("drop item").clicked() {
+                let base = if self.drop_base == 0 {
+                    None
+                } else {
+                    content.bases.get(self.drop_base - 1).map(|b| b.id.as_str())
+                };
+                let (x, y) = if self.drop_at_cursor {
+                    cursor_tile.unwrap_or((world.player.x, world.player.y))
+                } else {
+                    (world.player.x, world.player.y)
+                };
+                world.debug_drop(x, y, base, self.drop_rarity, self.drop_ilvl, content);
+            }
+            if ui.button("clear drops").clicked() {
+                world.debug_clear_drops();
             }
         });
     }

@@ -244,7 +244,7 @@ field. The panel binds sliders straight to `world.tunables` (damage, fire rate,
 projectile speed, contact dps, player/enemy speed, spawn cadence + caps, drop
 chance, plus the equipped archetype's fire-pattern knobs — shotgun pellet
 count + spread half-angle, or rocket blast radius + speed factor — shown only
-for the held weapon's profile), plus god mode and an auto-spawn toggle. Manual spawning, clear/revive,
+for the held weapon's profile), plus god mode and an auto-spawn toggle. A **loot** section rolls a drop on demand — pick a base (or random), rarity, and ilvl, dropped on the player (instant pickup, to fill the rack/bag) or at the cursor (`World::debug_drop`, which forces a base by rolling against a one-item pool). Manual spawning, clear/revive,
 and a per-shot hit readout (damage dealt / crit / dodge, surfaced from the
 otherwise-discarded `resolve_hit` result) go through `World::debug_*` methods.
 Export/import round-trips the whole `Tunables` block to `head2box-tunables.ron`
