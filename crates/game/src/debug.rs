@@ -197,12 +197,16 @@ impl DebugUi {
         pad_diag: &crate::PadDiag,
     ) {
         if self.docked {
-            // The bottom dock is wide and short, so lay the three section groups
-            // out in columns rather than one tall stack.
-            ui.columns(3, |cols| {
-                self.col_combat(&mut cols[0], world, content);
-                self.col_spawn_loot(&mut cols[1], world, content, cursor_tile);
-                self.col_misc(&mut cols[2], world, pad_diag);
+            // The bottom dock is wide and short, so put each flat section in its
+            // own column (all next to each other), with god mode on a full-width
+            // row above and the folded set-and-forget sections as the last column.
+            ui.add_space(2.0);
+            ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
+            ui.columns(4, |cols| {
+                self.loadout_section(&mut cols[0], world, content);
+                self.spawning_section(&mut cols[1], world, content, cursor_tile);
+                self.loot_section(&mut cols[2], world, content, cursor_tile);
+                self.col_misc(&mut cols[3], world, pad_diag);
             });
         } else {
             // Floating window: a single vertical stack.
