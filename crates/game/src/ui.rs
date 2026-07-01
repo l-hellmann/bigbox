@@ -127,7 +127,9 @@ pub fn draw_inventory(
     }
 
     // ---- divider + collected-item grid ----
-    let grid_top = py + 150.0;
+    // Well below the rack row (which ends ~py+122) so the "BAG" heading and
+    // divider don't overlap the equipped slots.
+    let grid_top = py + 178.0;
     draw_line(px + 16.0, grid_top - 16.0, px + pw - 16.0, grid_top - 16.0, 1.0, PANEL_BORDER);
     draw_text("BAG", px + 20.0, grid_top - 22.0, 16.0, TEXT_DIM);
 
