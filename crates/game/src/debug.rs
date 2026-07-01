@@ -196,17 +196,44 @@ impl DebugUi {
         cursor_tile: Option<(f32, f32)>,
         pad_diag: &crate::PadDiag,
     ) {
-        // Pinned at the very top: god mode is toggled constantly while testing,
-        // so it never hides inside a fold.
+        if self.docked {
+            // The bottom dock is wide and short, so lay the three section groups
+            // out in columns rather than one tall stack.
+            ui.columns(3, |cols| {
+                self.col_combat(&mut cols[0], world, content);
+                self.col_spawn_loot(&mut cols[1], world, content, cursor_tile);
+                self.col_misc(&mut cols[2], world, pad_diag);
+            });
+        } else {
+            // Floating window: a single vertical stack.
+            self.col_combat(ui, world, content);
+            self.col_spawn_loot(ui, world, content, cursor_tile);
+            self.col_misc(ui, world, pad_diag);
+        }
+    }
+
+    /// Column group: god mode + weapon/combat loadout.
+    fn col_combat(&mut self, ui: &mut egui::Ui, world: &mut World, content: &Content) {
+        // Pinned at the top: god mode is toggled constantly while testing.
         ui.add_space(2.0);
         ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
-
-        // Flat, always-on sections — the controls touched every session.
         self.loadout_section(ui, world, content);
+    }
+
+    /// Column group: enemy spawning + loot dropping.
+    fn col_spawn_loot(
+        &mut self,
+        ui: &mut egui::Ui,
+        world: &mut World,
+        content: &Content,
+        cursor_tile: Option<(f32, f32)>,
+    ) {
         self.spawning_section(ui, world, content, cursor_tile);
         self.loot_section(ui, world, content, cursor_tile);
+    }
 
-        // Folded, set-and-forget sections (collapsed by default).
+    /// Column group: the folded set-and-forget sections + the stats footer.
+    fn col_misc(&mut self, ui: &mut egui::Ui, world: &mut World, pad_diag: &crate::PadDiag) {
         ui.add_space(8.0);
         egui::CollapsingHeader::new("movement / pathing")
             .show(ui, |ui| Self::movement_body(ui, world));
