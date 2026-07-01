@@ -377,21 +377,22 @@ fn draw_explosion(e: &Explosion) {
 }
 
 /// 2D overlay: health bar, run stats, and the dead screen.
-pub fn draw_hud(world: &World) {
+pub fn draw_hud(font: &Font, world: &World) {
     // Health bar, top-left.
     let (bx, by, bw, bh) = (12.0, 12.0, 260.0, 22.0);
     draw_rectangle(bx, by, bw, bh, Color::new(0.15, 0.05, 0.05, 0.9));
     let frac = (world.player.current_life / world.player.max_life).clamp(0.0, 1.0);
     draw_rectangle(bx, by, bw * frac, bh, Color::new(0.85, 0.20, 0.20, 1.0));
     draw_rectangle_lines(bx, by, bw, bh, 2.0, Color::new(0.0, 0.0, 0.0, 1.0));
-    draw_text(
+    crate::ui::text(
+        font,
         &format!(
             "{:.0} / {:.0}",
             world.player.current_life, world.player.max_life
         ),
         bx + 8.0,
-        by + 17.0,
-        20.0,
+        by + 16.0,
+        18.0,
         WHITE,
     );
 
@@ -404,7 +405,7 @@ pub fn draw_hud(world: &World) {
         world.enemies.len(),
         world.inventory.len(),
     );
-    draw_text(&stats, 12.0, 56.0, 22.0, Color::new(0.85, 0.85, 0.85, 1.0));
+    crate::ui::text(font, &stats, 12.0, 56.0, 20.0, Color::new(0.85, 0.85, 0.85, 1.0));
 
     if let Some(eq) = world.equipped() {
         let tag = match eq.profile {
@@ -416,14 +417,15 @@ pub fn draw_hud(world: &World) {
             }
             FireProfile::Single => String::new(),
         };
-        draw_text(
+        crate::ui::text(
+            font,
             &format!(
                 "weapon: {}   dmg {:.0}   rate {:.1}/s{tag}",
                 eq.name, eq.weapon.damage_per_shot, eq.weapon.fire_rate
             ),
             12.0,
             78.0,
-            18.0,
+            17.0,
             Color::new(0.80, 0.80, 0.62, 1.0),
         );
 
@@ -438,32 +440,35 @@ pub fn draw_hud(world: &World) {
                     format!("{}:{}{mark}", i + 1, w.name)
                 })
                 .collect();
-            draw_text(
+            crate::ui::text(
+                font,
                 &line.join("  "),
                 12.0,
                 98.0,
-                17.0,
+                16.0,
                 Color::new(0.62, 0.66, 0.55, 1.0),
             );
         }
     }
 
     if let Some(last) = &world.last_pickup {
-        draw_text(
+        crate::ui::text(
+            font,
             &format!("picked up: {last}"),
             12.0,
             120.0,
-            18.0,
+            17.0,
             Color::new(0.7, 0.85, 0.7, 1.0),
         );
     }
 
     // Controls hint, bottom.
-    draw_text(
+    crate::ui::text(
+        font,
         "WASD move  |  aim  |  LMB / Space shoot  |  1-4 / wheel weapon  |  I inventory  |  ESC quit",
         12.0,
-        screen_height() - 16.0,
-        18.0,
+        screen_height() - 14.0,
+        16.0,
         Color::new(0.55, 0.55, 0.55, 1.0),
     );
 
@@ -471,10 +476,10 @@ pub fn draw_hud(world: &World) {
         let cx = screen_width() * 0.5;
         let cy = screen_height() * 0.5;
         let msg = "YOU DIED";
-        let d = measure_text(msg, None, 64, 1.0);
-        draw_text(msg, cx - d.width * 0.5, cy, 64.0, Color::new(0.9, 0.1, 0.1, 1.0));
+        let d = crate::ui::measure(font, msg, 64.0);
+        crate::ui::text(font, msg, cx - d.width * 0.5, cy, 64.0, Color::new(0.9, 0.1, 0.1, 1.0));
         let sub = "press R to restart";
-        let d2 = measure_text(sub, None, 28, 1.0);
-        draw_text(sub, cx - d2.width * 0.5, cy + 40.0, 28.0, WHITE);
+        let d2 = crate::ui::measure(font, sub, 28.0);
+        crate::ui::text(font, sub, cx - d2.width * 0.5, cy + 40.0, 28.0, WHITE);
     }
 }

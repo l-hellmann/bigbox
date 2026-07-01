@@ -218,6 +218,9 @@ async fn main() {
     let content = load_content();
     let mut world = new_world(level, seed, &content);
 
+    // Bundled UI/HUD font (JetBrains Mono), loaded once.
+    let font = ui::load_font();
+
     #[cfg(feature = "debug")]
     let mut dbg = debug::DebugUi::new();
 
@@ -307,14 +310,14 @@ async fn main() {
 
         // ---- 2D overlay pass ----
         set_default_camera();
-        render::draw_hud(&world);
+        render::draw_hud(&font, &world);
 
         // Inventory modal (paused). Immediate-mode: it reports the clicked
         // action and we mutate the world in response.
         if inventory_open {
             let mouse = mouse_position();
             let click = is_mouse_button_pressed(MouseButton::Left);
-            if let Some(action) = ui::draw_inventory(&world, &content, mouse, click) {
+            if let Some(action) = ui::draw_inventory(&font, &world, &content, mouse, click) {
                 match action {
                     ui::InvAction::Close => inventory_open = false,
                     ui::InvAction::Switch(slot) => {
