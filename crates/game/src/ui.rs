@@ -11,7 +11,9 @@ use macroquad::prelude::*;
 
 // ---- theme ----
 const SCREEN_DIM: Color = Color::new(0.0, 0.0, 0.0, 0.55);
-const PANEL_BG: Color = Color::new(0.06, 0.07, 0.09, 0.97);
+// Fully opaque: at <1.0 the frozen 3D scene (the player/enemy cubes at screen
+// center) bleeds through and reads as a stray dark box on the panel.
+const PANEL_BG: Color = Color::new(0.06, 0.07, 0.09, 1.0);
 const PANEL_BORDER: Color = Color::new(0.22, 0.26, 0.32, 1.0);
 const SLOT_BG: Color = Color::new(0.11, 0.13, 0.16, 1.0);
 const SLOT_HOVER: Color = Color::new(0.18, 0.22, 0.27, 1.0);
