@@ -341,7 +341,7 @@ fn draw_drop(d: &LootDrop) {
     draw_line_3d(vec3(d.x, 0.0, d.y), vec3(d.x, beam_top, d.y), color);
 }
 
-fn rarity_color(r: Rarity) -> Color {
+pub(crate) fn rarity_color(r: Rarity) -> Color {
     match r {
         Rarity::Basic => Color::new(0.70, 0.70, 0.70, 1.0),
         Rarity::Common => Color::new(0.45, 0.70, 1.00, 1.0),
@@ -460,7 +460,7 @@ pub fn draw_hud(world: &World) {
 
     // Controls hint, bottom.
     draw_text(
-        "WASD move  |  aim  |  LMB / Space / RT shoot  |  1-4 / wheel / Q-E / bumpers weapon  |  ESC quit",
+        "WASD move  |  aim  |  LMB / Space shoot  |  1-4 / wheel weapon  |  I inventory  |  ESC quit",
         12.0,
         screen_height() - 16.0,
         18.0,

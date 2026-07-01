@@ -576,6 +576,35 @@ impl World {
         self.activate(next as usize);
         true
     }
+
+    /// Equip the inventory item at `index` (the inventory-screen path). Unlike a
+    /// pickup, this is the player's explicit choice, so it's placed into its
+    /// archetype's rack slot **unconditionally** — even a weaker weapon — and any
+    /// weapon it displaces from the rack drops back into the inventory. The
+    /// chosen item leaves the inventory and becomes active. Returns `false`
+    /// (unchanged) for an out-of-range index or a non-weapon item.
+    pub fn equip_from_inventory(&mut self, index: usize, content: &Content) -> bool {
+        let Some(item) = self.inventory.get(index).cloned() else {
+            return false;
+        };
+        let Some(cand) = self.build_equipped(&item, content) else {
+            return false; // armor / unknown base — not equippable here
+        };
+        self.inventory.remove(index);
+        let slot = match self.archetype_slot(&cand.item.base) {
+            Some(s) => {
+                let old = std::mem::replace(&mut self.loadout[s], cand);
+                self.inventory.push(old.item);
+                s
+            }
+            None => {
+                self.loadout.push(cand);
+                self.loadout.len() - 1
+            }
+        };
+        self.activate(slot);
+        true
+    }
 }
 
 /// Commands are the **only** way to mutate the world. Input collectors emit
@@ -2507,5 +2536,52 @@ mod tests {
         w.apply(Command::SwitchWeapon { slot: 1 }, 0.016);
         assert_eq!(w.equipped().unwrap().item.base, "peashooter");
         assert_eq!(w.tunables.bullet_damage, 1.0);
+    }
+
+    // ---- equip from inventory (the inventory-screen path) ----
+
+    #[test]
+    fn equip_from_inventory_moves_item_into_rack() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.equip_base("pistol", &content); // rack[pistol], active 0
+        w.inventory.push(instance("cannon"));
+        assert!(w.equip_from_inventory(0, &content));
+        assert!(w.inventory.is_empty(), "equipped item leaves the bag");
+        assert_eq!(w.loadout().len(), 2, "cannon claims a new archetype slot");
+        assert_eq!(w.equipped().unwrap().item.base, "cannon");
+        assert_eq!(w.tunables.bullet_damage, 50.0);
+    }
+
+    #[test]
+    fn equip_from_inventory_replaces_archetype_even_with_a_weaker_pick() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        // Rack a strong pistol via the inventory path.
+        w.inventory.push(instance_tier("pistol", 5));
+        w.equip_from_inventory(0, &content);
+        assert_eq!(w.equipped().unwrap().item.upgrade_tier, 5);
+
+        // Equipping a weaker same-archetype pistol is the player's explicit
+        // choice, so it replaces the rack slot; the strong one drops to the bag.
+        w.inventory.push(instance_tier("pistol", 0));
+        let idx = w.inventory.iter().position(|it| it.upgrade_tier == 0).unwrap();
+        assert!(w.equip_from_inventory(idx, &content));
+        assert_eq!(w.loadout().len(), 1, "still one pistol slot");
+        assert_eq!(w.equipped().unwrap().item.upgrade_tier, 0, "weaker one now held");
+        assert!(
+            w.inventory.iter().any(|it| it.upgrade_tier == 5),
+            "displaced strong pistol back in the bag"
+        );
+    }
+
+    #[test]
+    fn equip_from_inventory_rejects_armor_and_bad_index() {
+        let content = weapon_content();
+        let mut w = World::new(single_floor_map());
+        w.inventory.push(instance("helm"));
+        assert!(!w.equip_from_inventory(0, &content), "armor isn't equippable");
+        assert_eq!(w.inventory.len(), 1, "armor stays in the bag");
+        assert!(!w.equip_from_inventory(99, &content), "out-of-range index");
     }
 }

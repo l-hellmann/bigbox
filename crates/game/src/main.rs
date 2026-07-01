@@ -23,6 +23,7 @@ mod debug;
 mod input;
 mod pad;
 mod render;
+mod ui;
 
 // Re-export the gamepad diagnostic type so `crate::PadDiag` (used by the debug
 // overlay) keeps resolving from the crate root after the move into `pad`.
@@ -225,11 +226,28 @@ async fn main() {
     // Aim-source latch (mouse vs. pad), carried across frames.
     let mut aim_state = input::AimState::new(mouse_position());
 
+    // UI state: the inventory modal pauses the sim while open. Client-side only,
+    // so it lives here rather than on the world.
+    let mut inventory_open = false;
+
     loop {
         let dt = get_frame_time();
 
+        // Death closes the inventory (no browsing the bag on the dead screen).
+        if world.game_over {
+            inventory_open = false;
+        }
+        // Esc backs out of the inventory first, then quits.
         if is_key_pressed(KeyCode::Escape) {
-            break;
+            if inventory_open {
+                inventory_open = false;
+            } else {
+                break;
+            }
+        }
+        // I / Tab toggle the inventory while alive.
+        if !world.game_over && (is_key_pressed(KeyCode::I) || is_key_pressed(KeyCode::Tab)) {
+            inventory_open = !inventory_open;
         }
         // Restart from the dead screen.
         if world.game_over && is_key_pressed(KeyCode::R) {
@@ -257,21 +275,26 @@ async fn main() {
         #[cfg(not(feature = "debug"))]
         let block_fire = false;
 
-        for cmd in input::collect_input(aim.dir, &pad) {
-            // Swallow fire and weapon-switch input while the cursor is over the
-            // debug panel — so clicking a button or scrolling a slider doesn't
-            // also shoot or cycle weapons.
-            if block_fire
-                && matches!(
-                    cmd,
-                    Command::Fire { .. } | Command::SwitchWeapon { .. } | Command::CycleWeapon { .. }
-                )
-            {
-                continue;
+        // Gameplay input + simulation are suspended while the inventory is open.
+        if !inventory_open {
+            for cmd in input::collect_input(aim.dir, &pad) {
+                // Swallow fire and weapon-switch input while the cursor is over
+                // the debug panel — so clicking a button or scrolling a slider
+                // doesn't also shoot or cycle weapons.
+                if block_fire
+                    && matches!(
+                        cmd,
+                        Command::Fire { .. }
+                            | Command::SwitchWeapon { .. }
+                            | Command::CycleWeapon { .. }
+                    )
+                {
+                    continue;
+                }
+                world.apply(cmd, dt);
             }
-            world.apply(cmd, dt);
+            world.tick(dt, &content);
         }
-        world.tick(dt, &content);
 
         // ---- 3D pass ----
         clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
@@ -285,6 +308,24 @@ async fn main() {
         // ---- 2D overlay pass ----
         set_default_camera();
         render::draw_hud(&world);
+
+        // Inventory modal (paused). Immediate-mode: it reports the clicked
+        // action and we mutate the world in response.
+        if inventory_open {
+            let mouse = mouse_position();
+            let click = is_mouse_button_pressed(MouseButton::Left);
+            if let Some(action) = ui::draw_inventory(&world, &content, mouse, click) {
+                match action {
+                    ui::InvAction::Close => inventory_open = false,
+                    ui::InvAction::Switch(slot) => {
+                        world.switch_weapon(slot);
+                    }
+                    ui::InvAction::Equip(index) => {
+                        world.equip_from_inventory(index, &content);
+                    }
+                }
+            }
+        }
         #[cfg(feature = "debug")]
         if dbg.show_entity_stats() {
             render::draw_entity_stats(&world, &content, &camera);
