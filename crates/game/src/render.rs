@@ -71,16 +71,29 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>) {
         draw_drop(d);
     }
 
-    // Enemies: per-archetype colored cubes sitting on the floor.
+    // Enemies: per-archetype colored cubes sitting on the floor, yawed to face
+    // their actual movement heading (`EnemyInstance.facing`).
     for e in &world.enemies {
         draw_enemy(e, content);
     }
 
-    // Player: a green cube sitting on the floor.
+    // Player: a green cube facing the aim direction, with a bright front face so
+    // the heading reads. Facing derives from the cursor's ground hit; when
+    // there's no aim (degenerate), it defaults to +Z ("north").
     let pc = vec3(px, PLAYER_HALF, py);
     let psize = vec3(PLAYER_HALF * 2.0, PLAYER_HALF * 2.0, PLAYER_HALF * 2.0);
-    draw_cube(pc, psize, None, Color::new(0.35, 0.85, 0.35, 1.0));
-    draw_cube_wires(pc, psize, Color::new(0.12, 0.40, 0.12, 1.0));
+    let pyaw = aim_hit
+        .map(|h| (h.x - px, h.z - py))
+        .filter(|(dx, dz)| dx * dx + dz * dz > 1e-6)
+        .map_or(0.0, |(dx, dz)| dx.atan2(dz));
+    draw_facing_cube(
+        pc,
+        psize,
+        pyaw,
+        Color::new(0.35, 0.85, 0.35, 1.0),
+        Color::new(0.12, 0.40, 0.12, 1.0),
+        Color::new(0.85, 1.00, 0.55, 1.0),
+    );
 
     // Projectiles: small glowing cubes floating at mid-height.
     for p in &world.projectiles {
@@ -280,9 +293,44 @@ fn draw_enemy(e: &EnemyInstance, content: &Content) {
     let (color, half) = enemy_visual(id);
     let center = vec3(e.x, half, e.y);
     let size = vec3(half * 2.0, half * 2.0, half * 2.0);
-    draw_cube(center, size, None, color);
-    draw_cube_wires(center, size, Color::new(0.05, 0.02, 0.02, 1.0));
+    // Yaw to the enemy's actual movement heading (kept steady while stopped).
+    // Front face is a pale "eyes" panel.
+    draw_facing_cube(
+        center,
+        size,
+        e.facing,
+        color,
+        Color::new(0.05, 0.02, 0.02, 1.0),
+        Color::new(0.96, 0.94, 0.86, 1.0),
+    );
+    // Health bar drawn outside the yaw so it stays world-aligned (a rotating
+    // bar under the fixed cam would be unreadable).
     draw_health_bar(e, half);
+}
+
+/// Draw a solid cube (with wire edges) yawed `yaw` radians about its vertical
+/// axis so its faces turn to point along a heading, with a distinct `front`-
+/// colored panel flush on the local **+Z** face — the "which way am I looking"
+/// marker. macroquad's `draw_cube` is axis-aligned, so we push a model matrix
+/// (translate to `center`, then rotate) and draw everything at the local origin.
+fn draw_facing_cube(center: Vec3, size: Vec3, yaw: f32, body: Color, edge: Color, front: Color) {
+    // Acquire → push → drop the handle before drawing: `draw_cube` re-acquires
+    // the internal GL context itself, so we must not hold it across those calls.
+    let m = Mat4::from_translation(center) * Mat4::from_rotation_y(yaw);
+    unsafe { get_internal_gl() }.quad_gl.push_model_matrix(m);
+
+    draw_cube(Vec3::ZERO, size, None, body);
+    draw_cube_wires(Vec3::ZERO, size, edge);
+    // Front panel: a thin quad-cube sitting slightly proud of the +Z face so it
+    // reads as a coloured "face" and doesn't z-fight the body.
+    draw_cube(
+        vec3(0.0, 0.0, size.z * 0.5 + 0.02),
+        vec3(size.x * 0.82, size.y * 0.82, 0.05),
+        None,
+        front,
+    );
+
+    unsafe { get_internal_gl() }.quad_gl.pop_model_matrix();
 }
 
 /// Floating health bar above a damaged enemy: a dark backing cube with a

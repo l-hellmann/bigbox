@@ -195,6 +195,8 @@ mod tests {
         Player {
             x: 10.0,
             y: 10.0,
+            vx: 0.0,
+            vy: 0.0,
             max_life: 100.0,
             current_life: 100.0,
         }

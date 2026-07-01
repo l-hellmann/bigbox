@@ -41,6 +41,10 @@ use rand::{Rng, SeedableRng};
 
 /// Player movement speed in tiles per second.
 pub const PLAYER_SPEED: f32 = 6.0;
+/// Player acceleration in tiles/sec² — how fast velocity eases toward the
+/// input target. Tuned so full speed is reached in ~0.15s: enough momentum to
+/// take the edge off instant start/stop without feeling floaty or laggy.
+pub const PLAYER_ACCEL: f32 = 40.0;
 /// Projectile speed in tiles per second. ~4× player speed so shots feel snappy.
 pub const PROJECTILE_SPEED: f32 = 24.0;
 /// Shots per second; reciprocal is the per-shot cooldown.
@@ -91,6 +95,9 @@ pub const DROP_CHANCE: f32 = 0.35;
 #[cfg_attr(feature = "debug", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tunables {
     pub player_speed: f32,
+    /// Acceleration (tiles/sec²) the player velocity eases toward the input
+    /// target at. Higher = snappier/more instant; lower = more momentum.
+    pub player_accel: f32,
     pub projectile_speed: f32,
     pub fire_rate: f32,
     pub bullet_damage: f32,
@@ -150,6 +157,7 @@ impl Default for Tunables {
     fn default() -> Self {
         Self {
             player_speed: PLAYER_SPEED,
+            player_accel: PLAYER_ACCEL,
             projectile_speed: PROJECTILE_SPEED,
             fire_rate: FIRE_RATE,
             bullet_damage: BULLET_DAMAGE,
@@ -186,6 +194,11 @@ pub struct Player {
     /// renderer multiplies by tile size to get screen pixels.
     pub x: f32,
     pub y: f32,
+    /// Current velocity in tiles/sec. The move command sets an *intent*
+    /// direction; the tick eases this velocity toward `intent × player_speed`
+    /// (bounded by `player_accel`) so starts/stops ramp instead of snapping.
+    pub vx: f32,
+    pub vy: f32,
     pub max_life: f32,
     pub current_life: f32,
 }
@@ -284,6 +297,10 @@ pub struct EnemyInstance {
     /// or takes a hit, and stays `true` thereafter (it gives chase via the
     /// flow field even after losing sight).
     pub awake: bool,
+    /// Yaw (radians) the enemy is visually facing — updated each tick from its
+    /// actual movement direction so the render can turn the cube to match.
+    /// Render-only; holds the last heading while stopped so it doesn't snap.
+    pub facing: f32,
 }
 
 /// An item lying on the ground waiting to be walked over.
@@ -367,6 +384,12 @@ pub struct World {
     /// player-tile-change, not per frame).
     flow_goal: (u32, u32),
 
+    /// This frame's requested move direction, set by [`Command::Move`] and
+    /// consumed (then cleared) by the tick's movement integration. Kept as
+    /// intent — rather than mutating position in `apply` — so a frame with no
+    /// move command reads as "release", letting velocity decay to a stop.
+    move_intent: (f32, f32),
+
     spawn_timer: f32,
 }
 
@@ -380,6 +403,8 @@ impl World {
             player: Player {
                 x: sx as f32 + 0.5,
                 y: sy as f32 + 0.5,
+                vx: 0.0,
+                vy: 0.0,
                 max_life: PLAYER_MAX_LIFE,
                 current_life: PLAYER_MAX_LIFE,
             },
@@ -402,6 +427,7 @@ impl World {
             next_entity_id: 0,
             flow,
             flow_goal: goal,
+            move_intent: (0.0, 0.0),
             spawn_timer: SPAWN_INTERVAL,
             map,
         }
@@ -626,25 +652,23 @@ pub enum Command {
 }
 
 impl World {
-    /// Apply one command. Movement uses **per-axis collision** so the player
-    /// slides along walls instead of getting hard-stopped on diagonals. Fire
-    /// respects `player_fire_cooldown` and silently drops if not ready.
-    /// No-op once `game_over` is set.
-    pub fn apply(&mut self, cmd: Command, dt: f32) {
+    /// Apply one command. Movement only *records intent* here — the tick's
+    /// [`World::integrate_movement`] eases velocity toward it with per-axis
+    /// collision, so the player slides along walls and accelerates smoothly.
+    /// Fire respects `player_fire_cooldown` and silently drops if not ready.
+    /// No-op once `game_over` is set. (`dt` is retained for the command-stream
+    /// shape — no current command integrates over it directly.)
+    pub fn apply(&mut self, cmd: Command, _dt: f32) {
         if self.game_over {
             return;
         }
         match cmd {
+            // Record the requested direction; the tick's movement integration
+            // (`integrate_movement`) eases velocity toward it and moves the
+            // player. Keeping this as intent — not an immediate position bump —
+            // is what lets a no-input frame decelerate the player smoothly.
             Command::Move { dx, dy } => {
-                let step = self.tunables.player_speed * dt;
-                let nx = self.player.x + dx * step;
-                if self.can_stand(nx, self.player.y) {
-                    self.player.x = nx;
-                }
-                let ny = self.player.y + dy * step;
-                if self.can_stand(self.player.x, ny) {
-                    self.player.y = ny;
-                }
+                self.move_intent = (dx, dy);
             }
             Command::Fire { dx, dy } => {
                 if self.player_fire_cooldown > 0.0 {
@@ -745,6 +769,7 @@ impl World {
         }
         self.player_fire_cooldown = (self.player_fire_cooldown - dt).max(0.0);
 
+        self.integrate_movement(dt);
         self.update_flow();
         self.resolve_projectiles(dt, content);
         self.update_explosions(dt);
@@ -755,6 +780,49 @@ impl World {
 
         if self.player.current_life <= 0.0 {
             self.game_over = true;
+        }
+    }
+
+    /// Ease the player's velocity toward this frame's move intent and advance
+    /// position with per-axis wall sliding. The intent (set by
+    /// [`Command::Move`]) is consumed and cleared here, so a frame without a
+    /// move command reads as a neutral target and velocity decays to a stop —
+    /// giving smooth acceleration/deceleration instead of instant snap.
+    fn integrate_movement(&mut self, dt: f32) {
+        let (ix, iy) = self.move_intent;
+        self.move_intent = (0.0, 0.0);
+
+        // Target velocity = intent direction × speed (intent is already a unit
+        // vector from the input layer; `(0,0)` means "stop").
+        let speed = self.tunables.player_speed;
+        let (tvx, tvy) = (ix * speed, iy * speed);
+
+        // Step the velocity vector toward the target, capped by accel × dt so
+        // the approach is smooth from any current velocity (including a reversal).
+        let max_delta = self.tunables.player_accel * dt;
+        let (dvx, dvy) = (tvx - self.player.vx, tvy - self.player.vy);
+        let dlen = (dvx * dvx + dvy * dvy).sqrt();
+        if dlen <= max_delta || dlen < 1e-6 {
+            self.player.vx = tvx;
+            self.player.vy = tvy;
+        } else {
+            self.player.vx += dvx / dlen * max_delta;
+            self.player.vy += dvy / dlen * max_delta;
+        }
+
+        // Per-axis move + wall slide; zero the blocked axis so velocity doesn't
+        // accumulate into a wall and fling the player on release.
+        let nx = self.player.x + self.player.vx * dt;
+        if self.can_stand(nx, self.player.y) {
+            self.player.x = nx;
+        } else {
+            self.player.vx = 0.0;
+        }
+        let ny = self.player.y + self.player.vy * dt;
+        if self.can_stand(self.player.x, ny) {
+            self.player.y = ny;
+        } else {
+            self.player.vy = 0.0;
         }
     }
 
@@ -967,6 +1035,11 @@ impl World {
         let map = &self.map;
         for (i, e) in self.enemies.iter_mut().enumerate() {
             let (dx, dy) = dirs[i];
+            // Face the actual heading; keep the last facing while stopped so a
+            // ring-equilibrium enemy doesn't snap back to a default angle.
+            if dx * dx + dy * dy > 1e-6 {
+                e.facing = dx.atan2(dy);
+            }
             let step = e.speed * speed_mult * dt;
             let nx = e.x + dx * step;
             let ny = e.y + dy * step;
@@ -1180,6 +1253,7 @@ impl World {
             combatant: arch.as_combatant(),
             speed: archetype_speed(&arch.id),
             awake: false,
+            facing: 0.0,
         });
     }
 
@@ -1555,11 +1629,21 @@ mod tests {
         assert!(w.can_stand(w.player.x, w.player.y));
     }
 
+    /// Set a move intent and integrate `steps` fixed sub-steps of `dt` — the
+    /// tick's movement path, exercised without needing `Content`.
+    fn drive_move(w: &mut World, dx: f32, dy: f32, dt: f32, steps: usize) {
+        for _ in 0..steps {
+            w.apply(Command::Move { dx, dy }, dt);
+            w.integrate_movement(dt);
+        }
+    }
+
     #[test]
     fn move_command_advances_player_on_floor() {
         let mut w = world_at_seed(42);
         let (x0, y0) = (w.player.x, w.player.y);
-        w.apply(Command::Move { dx: 1.0, dy: 0.0 }, 0.1);
+        // Momentum ramps in, so drive several sub-steps to build velocity.
+        drive_move(&mut w, 1.0, 0.0, 0.05, 8);
         assert!(w.can_stand(w.player.x, w.player.y));
         assert!((w.player.y - y0).abs() < 1e-6);
         if w.can_stand(x0 + 1.0, y0) {
@@ -1571,9 +1655,12 @@ mod tests {
     fn wall_blocks_movement_on_the_blocked_axis_only() {
         let mut w = World::new(single_floor_map());
         let (x0, y0) = (w.player.x, w.player.y);
-        w.apply(Command::Move { dx: 1.0, dy: 1.0 }, 1.0);
-        assert!((w.player.x - x0).abs() < 1e-6);
-        assert!((w.player.y - y0).abs() < 1e-6);
+        // A single 1×1-floor tile: both axes are walled at the edges, so the
+        // player can't leave the tile no matter how long it drives.
+        drive_move(&mut w, 1.0, 1.0, 0.1, 30);
+        assert!((w.player.x - x0).abs() < 0.6);
+        assert!((w.player.y - y0).abs() < 0.6);
+        assert!(w.can_stand(w.player.x, w.player.y));
     }
 
     #[test]
@@ -1597,11 +1684,12 @@ mod tests {
             player_spawn: (1, 1),
         };
         let mut world = World::new(map);
-        // dt × PLAYER_SPEED × dx must push the new_x across the wall
-        // boundary at x=2. 0.1 × 6 × 1 = 0.6 → new_x 1.5 + 0.6 = 2.1 → wall.
-        world.apply(Command::Move { dx: 1.0, dy: 1.0 }, 0.1);
-        assert!((world.player.x - 1.5).abs() < 1e-6, "x stays at center of corridor");
-        assert!(world.player.y > 1.5, "slid down despite x being walled");
+        // Driving diagonally down the corridor: x is bounded by the walls at
+        // x=0/x=2 (stays inside the [1,2) floor column) while y slides freely
+        // down the length of the corridor — the per-axis slide.
+        drive_move(&mut world, 1.0, 1.0, 0.1, 20);
+        assert!(world.player.x < 2.0, "x never crosses into the walled column");
+        assert!(world.player.y > 2.5, "y slid far down the corridor");
     }
 
     #[test]
@@ -1623,10 +1711,14 @@ mod tests {
         ];
         for cmd in cmds {
             a.apply(cmd, 0.05);
+            a.integrate_movement(0.05);
             b.apply(cmd, 0.05);
+            b.integrate_movement(0.05);
         }
         assert!((a.player.x - b.player.x).abs() < 1e-6);
         assert!((a.player.y - b.player.y).abs() < 1e-6);
+        // And they actually moved (velocity built up), not a trivial pass.
+        assert!(a.player.vx != 0.0 || a.player.vy != 0.0);
     }
 
     // ---- shooting ----
@@ -1792,6 +1884,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 4.0,
             awake: true,
+            facing: 0.0,
         });
         let start = w.flow.distance_at(far_tile.0, far_tile.1);
         // Several ticks of pure pathing (no content needed for movement).
@@ -1832,6 +1925,7 @@ mod tests {
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
                 awake: false,
+                facing: 0.0,
             });
         }
         let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
@@ -1856,6 +1950,7 @@ mod tests {
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
                 awake: false,
+                facing: 0.0,
             });
         }
         let gap0 = (w.enemies[0].y - w.enemies[1].y).abs();
@@ -1882,6 +1977,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 3.0,
             awake: false,
+            facing: 0.0,
         });
         w.tick(0.05, &Content::empty());
         let e = &w.enemies[0];
@@ -1913,6 +2009,7 @@ mod tests {
                 combatant: Combatant::dummy(100.0),
                 speed: 3.0,
                 awake: false,
+                facing: 0.0,
             });
             w.tick(0.05, &Content::empty());
             let e = &w.enemies[0];
@@ -1941,6 +2038,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 3.0,
             awake: false,
+            facing: 0.0,
         });
         for _ in 0..20 {
             w.tick(0.05, &Content::empty());
@@ -1965,6 +2063,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 3.0,
             awake: false,
+            facing: 0.0,
         });
         w.tick(0.1, &Content::empty());
         assert!(w.enemies[0].awake, "in-sight player should wake the enemy");
@@ -1984,6 +2083,7 @@ mod tests {
             combatant: Combatant::dummy(1000.0),
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         assert!(!w.enemies[0].awake);
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
@@ -2005,6 +2105,7 @@ mod tests {
             combatant: Combatant::dummy(1000.0),
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &Content::empty());
@@ -2028,6 +2129,7 @@ mod tests {
             combatant: Combatant::dummy(1.0), // dies to one shot
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &content);
@@ -2084,6 +2186,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         w.tick(1.0, &Content::empty()); // CONTACT_DPS × 1s = 8 dmg > 1 life
         assert!(w.player.current_life <= 0.0);
@@ -2100,6 +2203,7 @@ mod tests {
     fn tunables_default_matches_the_constants() {
         let t = Tunables::default();
         assert_eq!(t.player_speed, PLAYER_SPEED);
+        assert_eq!(t.player_accel, PLAYER_ACCEL);
         assert_eq!(t.bullet_damage, BULLET_DAMAGE);
         assert_eq!(t.fire_rate, FIRE_RATE);
         assert_eq!(t.spawn_interval, SPAWN_INTERVAL);
@@ -2141,6 +2245,7 @@ mod tests {
             combatant: Combatant::dummy(100.0),
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         w.tick(1.0, &Content::empty());
         assert_eq!(w.player.current_life, 5.0, "god mode should negate contact damage");
@@ -2171,6 +2276,7 @@ mod tests {
             combatant: Combatant::dummy(1000.0),
             speed: 0.0,
             awake: false,
+            facing: 0.0,
         });
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
         w.tick(0.02, &Content::empty());
@@ -2389,6 +2495,7 @@ mod tests {
                 combatant: Combatant::dummy(1000.0),
                 speed: 0.0,
                 awake: true,
+                facing: 0.0,
             });
         }
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);
@@ -2435,6 +2542,7 @@ mod tests {
                 combatant: Combatant::dummy(1000.0),
                 speed: 0.0,
                 awake: true,
+                facing: 0.0,
             });
         }
         w.apply(Command::Fire { dx: 1.0, dy: 0.0 }, 0.016);

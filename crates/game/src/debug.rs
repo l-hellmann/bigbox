@@ -525,6 +525,7 @@ impl DebugUi {
     fn movement_body(ui: &mut egui::Ui, world: &mut World) {
         let t = &mut world.tunables;
         ui.add(egui::Slider::new(&mut t.player_speed, 1.0..=20.0).text("player speed"));
+        ui.add(egui::Slider::new(&mut t.player_accel, 5.0..=200.0).text("player accel"));
         ui.add(egui::Slider::new(&mut t.enemy_speed_mult, 0.0..=4.0).text("enemy speed ×"));
         ui.add(egui::Slider::new(&mut t.sight_range, 0.0..=40.0).text("sight range (aggro)"));
         ui.add(egui::Slider::new(&mut t.los_range, 0.0..=40.0).text("LOS beeline range"));

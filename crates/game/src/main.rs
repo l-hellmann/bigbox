@@ -300,6 +300,13 @@ async fn main() {
         }
 
         // ---- 3D pass ----
+        // Rebuild the camera from the *post-tick* player position. The `camera`
+        // above was built before the tick (aim unprojection needs it early); if
+        // we rendered with it, the whole scene would lag the player by one
+        // frame's movement (`velocity × dt`), which shimmers under variable
+        // frame times. Re-targeting here keeps the player dead-centre and the
+        // world rock-steady.
+        let camera = build_camera(&world.player);
         clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
         set_camera(&camera);
         render::draw_scene(&world, &content, aim.hit);
