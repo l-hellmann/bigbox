@@ -1,23 +1,26 @@
 [package]
-name = "head2box-game"
+name = "bigbox-game"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Runtime layer for head2box — macroquad window, input, render loop."
+description = "Runtime layer for bigbox — macroquad window, input, render loop."
 
 [lib]
-name = "h2b_game"
+name = "bb_game"
 
 [[bin]]
-name = "h2b-game"
+name = "bb-game"
 path = "src/main.rs"
 
 [dependencies]
-head2box-core = { path = "../core" }
-head2box-content = { path = "../content" }
-head2box-procgen = { path = "../procgen" }
+bigbox-core = { path = "../core" }
+bigbox-content = { path = "../content" }
+bigbox-procgen = { path = "../procgen" }
 rand = { workspace = true }
+bevy = { workspace = true }
+# Kept until the render/input/UI/debug layers finish porting to Bevy, then
+# removed (see .attic/migration/plan.md).
 macroquad = { workspace = true }
 # Debug-only immediate-mode tuning panel + RON tunable export/import. All
 # optional so release builds don't compile (or ship) any of it. Enable with
@@ -26,29 +29,15 @@ egui-macroquad = { version = "0.17", optional = true }
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
-# Gamepad input (twin-stick) — native only. gilrs *compiles* for wasm, but its
-# web backend reaches the browser Gamepad API through wasm-bindgen, whose JS
-# glue macroquad's plain loader can't provide. The web build ships a no-op pad
-# stub instead (keyboard/mouse still work); gamepad-on-web is deferred.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Gamepad input (twin-stick). Desktop-native only — the whole target is native
+# now, so no cfg split.
 gilrs = "0.11"
 
 [features]
 # Compiles the local-dev tooling: the in-game tuning overlay (egui), tunable
 # RON export/import, and clap CLI arg parsing. Off by default → none of it
-# (nor egui/serde/ron/clap) lands in a `--release` or wasm build.
+# (nor egui/serde/ron/clap) lands in a `--release` build.
 debug = ["dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]
-
-# wasm-only: `rand`'s transitive `getrandom 0.2` won't compile for
-# wasm32-unknown-unknown without a backend. The `js` feature would work but
-# drags in wasm-bindgen glue that macroquad's plain JS loader can't provide
-# (unresolved `__wbindgen_*` imports). Gameplay RNG is *always* seeded, so
-# getrandom is never actually called — the `custom` feature lets us register a
-# trivial stub backend instead (see `main.rs`), satisfying the link with zero
-# wasm-bindgen footprint. Feature-unification applies it to the transitive copy.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["custom"] }
-# Read run config (seed/level) from the page URL query string on web, so a URL
-# reproduces an exact run. Uses miniquad's sapp-jsutils JS bridge — no
-# wasm-bindgen. Needs `quad-url.js` included in index.html.
-quad-url = "0.1"
+# Dev-only: dynamic-link Bevy for much faster incremental link times. Never
+# enable for a release/distribution build. Use: `cargo run --features fast-dev`.
+fast-dev = ["bevy/dynamic_linking"]

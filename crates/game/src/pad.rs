@@ -1,20 +1,12 @@
-//! Gamepad polling. Twin-stick mapping: left stick = move, right stick = aim,
-//! right trigger = fire. Resolves one `PadInput` per frame; the runtime merges
-//! it with keyboard/mouse in `collect_input`.
-//!
-//! Native uses `gilrs`. gilrs *also* has a web backend, but it reaches the
-//! browser Gamepad API through wasm-bindgen, whose JS glue macroquad's plain
-//! loader can't provide — so on wasm we skip gilrs and read the Gamepad API
-//! ourselves via a small miniquad plugin (`web/quad-gamepad.js`), passing the
-//! numeric axes/buttons straight across the boundary. Same twin-stick mapping
-//! either way.
+//! Gamepad polling via `gilrs` (desktop-native). Twin-stick mapping: left stick
+//! = move, right stick = aim, right trigger = fire. Resolves one `PadInput` per
+//! frame; the runtime merges it with keyboard/mouse in `collect_input`.
 
-#[cfg(not(target_arch = "wasm32"))]
 use gilrs::{Axis, Button, Gilrs};
 
 /// One frame of gamepad intent, resolved from the active pad (all-`None` when
-/// none is connected, or on wasm). Twin-stick mapping: left stick = move,
-/// right stick = aim, right trigger = fire.
+/// none is connected). Twin-stick mapping: left stick = move, right stick =
+/// aim, right trigger = fire.
 #[derive(Default, Clone, Copy)]
 pub struct PadInput {
     /// Left-stick move vector in tile space (analog magnitude preserved),
@@ -60,16 +52,14 @@ pub struct PadDiag {
     pub pads: Vec<PadInfo>,
 }
 
-/// Native gamepad polling via `gilrs`. Carries the previous-frame bumper state
-/// so weapon-cycle inputs can be edge-detected (gilrs has no built-in edge).
-#[cfg(not(target_arch = "wasm32"))]
+/// Gamepad polling via `gilrs`. Carries the previous-frame bumper state so
+/// weapon-cycle inputs can be edge-detected (gilrs has no built-in edge).
 pub struct Pads {
     gilrs: Option<Gilrs>,
     prev_next: bool,
     prev_prev: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Pads {
     pub fn new() -> Self {
         Pads {
@@ -197,112 +187,3 @@ impl Pads {
     }
 }
 
-/// Web gamepad polling via the browser Gamepad API, bridged by `quad-gamepad.js`
-/// (a miniquad plugin). The API's axes/buttons are plain numbers, so they cross
-/// the wasm boundary directly — no wasm-bindgen, no string marshaling, unlike
-/// gilrs's web backend (the whole reason gilrs is native-only here).
-#[cfg(target_arch = "wasm32")]
-mod web {
-    use super::PadInput;
-
-    // Imports provided by `web/quad-gamepad.js`. All numeric.
-    unsafe extern "C" {
-        /// 1 if a connected gamepad is present (and cached for this poll), else 0.
-        fn quad_gamepad_connected() -> i32;
-        /// Axis value of the cached gamepad, or 0.0 if out of range.
-        fn quad_gamepad_axis(index: i32) -> f32;
-        /// Button analog value (0..1) of the cached gamepad, or 0.0.
-        fn quad_gamepad_button(index: i32) -> f32;
-    }
-
-    // "Standard" gamepad mapping indices — the same physical controls the native
-    // gilrs path reads (left stick = move, right stick = aim, RT = fire).
-    const AXIS_LEFT_X: i32 = 0;
-    const AXIS_LEFT_Y: i32 = 1;
-    const AXIS_RIGHT_X: i32 = 2;
-    const AXIS_RIGHT_Y: i32 = 3;
-    const BUTTON_LEFT_BUMPER: i32 = 4;
-    const BUTTON_RIGHT_BUMPER: i32 = 5;
-    const BUTTON_RIGHT_TRIGGER: i32 = 7;
-    /// Analog trigger reads as "held" past this value.
-    const TRIGGER_THRESHOLD: f32 = 0.5;
-
-    /// Carries the previous-frame bumper state so weapon-cycle inputs edge-trigger
-    /// (the Gamepad API reports held state, not presses).
-    #[derive(Default)]
-    pub struct Pads {
-        prev_next: bool,
-        prev_prev: bool,
-    }
-
-    impl Pads {
-        pub fn new() -> Self {
-            Pads::default()
-        }
-
-        /// Poll the first connected gamepad. `deadzone` (0..1) matches the native
-        /// path's stick-magnitude neutral zone.
-        pub fn read(&mut self, deadzone: f32) -> PadInput {
-            // `connected()` refreshes the cached gamepad snapshot as a side
-            // effect, so it must be called before reading axes/buttons.
-            if unsafe { quad_gamepad_connected() } == 0 {
-                return PadInput::default();
-            }
-            let axis = |i| unsafe { quad_gamepad_axis(i) };
-            let button = |i| unsafe { quad_gamepad_button(i) };
-
-            // The Gamepad API already reports stick Y as +down, which *is* our
-            // world dy (up = −dy). So, unlike the gilrs path (which gets +up and
-            // flips), we pass Y straight through.
-            let deadzoned = |x: f32, y: f32| -> Option<(f32, f32)> {
-                if (x * x + y * y).sqrt() < deadzone {
-                    None
-                } else {
-                    Some((x, y))
-                }
-            };
-
-            let move_dir = deadzoned(axis(AXIS_LEFT_X), axis(AXIS_LEFT_Y));
-            let aim_dir = deadzoned(axis(AXIS_RIGHT_X), axis(AXIS_RIGHT_Y)).map(|(x, y)| {
-                let len = (x * x + y * y).sqrt();
-                (x / len, y / len)
-            });
-            let fire = button(BUTTON_RIGHT_TRIGGER) > TRIGGER_THRESHOLD;
-            // Bumpers cycle weapons; edge-detect against the previous frame.
-            let rb = button(BUTTON_RIGHT_BUMPER) > TRIGGER_THRESHOLD;
-            let lb = button(BUTTON_LEFT_BUMPER) > TRIGGER_THRESHOLD;
-            let cycle_next = rb && !self.prev_next;
-            let cycle_prev = lb && !self.prev_prev;
-            self.prev_next = rb;
-            self.prev_prev = lb;
-
-            PadInput {
-                move_dir,
-                aim_dir,
-                fire,
-                cycle_next,
-                cycle_prev,
-            }
-        }
-
-        /// The debug overlay isn't built for wasm (egui is native-only), but keep
-        /// the surface so the module compiles under any feature combination.
-        #[cfg(feature = "debug")]
-        pub fn debug_diag(&self) -> super::PadDiag {
-            super::PadDiag {
-                initialized: unsafe { quad_gamepad_connected() } != 0,
-                pads: Vec::new(),
-            }
-        }
-    }
-
-    /// Exported so `mq_js_bundle.js`'s plugin version check matches the JS side
-    /// (`version: 1`) and stays silent. Kept by `#[unsafe(no_mangle)]`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn quad_gamepad_crate_version() -> u32 {
-        1
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub use web::Pads;

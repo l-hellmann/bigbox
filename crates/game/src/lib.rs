@@ -21,12 +21,12 @@
 //! needs to interpolate an entity across position snapshots. Projectiles get
 //! no persistent id — they're ephemeral, client-replayed from their spawn.
 
-use h2b_core::roll::roll_item;
-use h2b_core::{
+use bb_core::roll::roll_item;
+use bb_core::{
     Affix, BaseItem, Combatant, Enemy, HitResult, ItemInstance, Rarity, Weapon, aggregate_item,
     dps_against, resolve_hit,
 };
-use h2b_procgen::{FlowField, Map, Tile, pick_spawn_points};
+use bb_procgen::{FlowField, Map, Tile, pick_spawn_points};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -1528,8 +1528,8 @@ fn roll_rarity<R: Rng + ?Sized>(rng: &mut R) -> Rarity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use h2b_core::Combatant;
-    use h2b_procgen::{MapParams, generate_bsp};
+    use bb_core::Combatant;
+    use bb_procgen::{MapParams, generate_bsp};
 
     fn world_at_seed(seed: u64) -> World {
         World::new(generate_bsp(&MapParams {
@@ -1591,11 +1591,11 @@ mod tests {
             category: "rapid_fire".into(),
             slot: "weapon".into(),
             intrinsic_stats: vec![
-                h2b_core::IntrinsicStat {
+                bb_core::IntrinsicStat {
                     stat: "weapon_damage".into(),
                     value: dmg,
                 },
-                h2b_core::IntrinsicStat {
+                bb_core::IntrinsicStat {
                     stat: "fire_rate".into(),
                     value: rate,
                 },
@@ -1911,7 +1911,7 @@ mod tests {
         for ty in 0..w.map.height {
             for tx in 0..w.map.width {
                 let d = w.flow.distance_at(tx, ty);
-                if d != h2b_procgen::UNREACHABLE && d > far_d {
+                if d != bb_procgen::UNREACHABLE && d > far_d {
                     far_d = d;
                     far_tile = (tx, ty);
                 }

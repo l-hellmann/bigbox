@@ -8,10 +8,10 @@
 //! draws, mutating nothing. The debug-only viz (flow field, entity stat blocks)
 //! is feature-gated to match its callers.
 
-use h2b_core::progression::level_for_total_xp;
-use h2b_core::Rarity;
-use h2b_game::{Content, EnemyInstance, Explosion, FireProfile, LootDrop, Projectile, World};
-use h2b_procgen::{Map, Tile};
+use bb_core::progression::level_for_total_xp;
+use bb_core::Rarity;
+use bb_game::{Content, EnemyInstance, Explosion, FireProfile, LootDrop, Projectile, World};
+use bb_procgen::{Map, Tile};
 use macroquad::prelude::*;
 
 /// How tall wall cubes stand, in world units (= tiles). Tall enough to read
@@ -174,7 +174,7 @@ pub fn draw_scene(world: &World, content: &Content, aim_hit: Option<Vec3>, asset
 /// exactly how a swarm will route — around pillars, through doorways, etc.
 #[cfg(feature = "debug")]
 pub fn draw_flow_field(world: &World) {
-    use h2b_procgen::UNREACHABLE;
+    use bb_procgen::UNREACHABLE;
     let flow = world.flow();
     let map = &world.map;
     let (px, py) = (world.player.x, world.player.y);
@@ -265,7 +265,7 @@ fn draw_label(lines: &[String], sx: f32, sy: f32, color: Color) {
 /// enemy, and a `PLAYER` block above the player. Toggled from the debug panel.
 #[cfg(feature = "debug")]
 pub fn draw_entity_stats(world: &World, content: &Content, camera: &Camera3D) {
-    use h2b_procgen::UNREACHABLE;
+    use bb_procgen::UNREACHABLE;
     use macroquad::camera::Camera;
 
     /// Only label this many enemies — the nearest ones — to keep it readable.

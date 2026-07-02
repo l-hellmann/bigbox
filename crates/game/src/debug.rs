@@ -2,23 +2,23 @@
 //!
 //! An immediate-mode egui panel bound directly to `World::tunables` plus the
 //! `World::debug_*` spawn helpers. Every widget here edits live game state; the
-//! headless `h2b_game` library knows nothing about it. Toggle with **F1**.
+//! headless `bb_game` library knows nothing about it. Toggle with **F1**.
 //!
 //! Run it with:
 //! ```text
-//! cargo run -p head2box-game --features debug
+//! cargo run -p bigbox-game --features debug
 //! ```
 
 use egui_macroquad::egui;
-use h2b_core::{HitResult, Rarity, Weapon, dps_against, time_to_kill};
-use h2b_game::{Content, FireProfile, Tunables, World};
-use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
+use bb_core::{HitResult, Rarity, Weapon, dps_against, time_to_kill};
+use bb_game::{Content, FireProfile, Tunables, World};
+use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
 
 /// Where tunables export/import. Lives in the process working directory so the
 /// file sits next to wherever `cargo run` was launched — easy to find, edit by
 /// hand, and check into a presets folder.
-const TUNABLES_PATH: &str = "head2box-tunables.ron";
+const TUNABLES_PATH: &str = "bigbox-tunables.ron";
 
 pub struct DebugUi {
     visible: bool,
@@ -406,17 +406,17 @@ impl DebugUi {
         // relative weights (0 = never spawn that type). All-zero ⇒ uniform, so
         // the buttons make it easy to get back to shipping behaviour.
         subhead(ui, "wave composition (weights)");
-        let n = content.enemies.len().min(h2b_game::MAX_SPAWN_ARCHETYPES);
+        let n = content.enemies.len().min(bb_game::MAX_SPAWN_ARCHETYPES);
         for i in 0..n {
             let name = content.enemies[i].id.as_str();
             ui.add(egui::Slider::new(&mut world.tunables.spawn_weights[i], 0..=10).text(name));
         }
         ui.horizontal(|ui| {
             if ui.button("uniform (clear)").clicked() {
-                world.tunables.spawn_weights = [0; h2b_game::MAX_SPAWN_ARCHETYPES];
+                world.tunables.spawn_weights = [0; bb_game::MAX_SPAWN_ARCHETYPES];
             }
             if ui.button("all ×1").clicked() {
-                world.tunables.spawn_weights = [0; h2b_game::MAX_SPAWN_ARCHETYPES];
+                world.tunables.spawn_weights = [0; bb_game::MAX_SPAWN_ARCHETYPES];
                 for w in world.tunables.spawn_weights.iter_mut().take(n) {
                     *w = 1;
                 }

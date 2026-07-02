@@ -5,7 +5,7 @@
 //! the mouse-vs-pad switching logic is unit-testable headlessly.
 
 use crate::pad::PadInput;
-use h2b_game::{Command, Player};
+use bb_game::{Command, Player};
 use macroquad::prelude::*;
 
 /// Which device currently drives aim. The right stick switches to `Pad` (and

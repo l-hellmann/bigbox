@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use h2b_core::{
+use bb_core::{
     Attachment, BaseItem, Combatant, Enemy, ItemInstance, Rarity, StatId, Weapon, aggregate_item,
     dps_against, item::RolledAffix, roll::roll_item, time_to_kill,
 };
@@ -14,7 +14,7 @@ mod summary;
 use summary::{DropMetrics, Summary};
 
 #[derive(Parser, Debug)]
-#[command(name = "h2b-sim", about = "head2box loot drop simulator")]
+#[command(name = "bb-sim", about = "bigbox loot drop simulator")]
 struct Args {
     #[arg(long)]
     monster_level: u32,
@@ -32,10 +32,10 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let affixes = h2b_content::load_affixes(&args.content_dir.join("affixes.ron"))?;
-    let bases = h2b_content::load_bases(&args.content_dir.join("bases.ron"))?;
-    let attachments = h2b_content::load_attachments(&args.content_dir.join("attachments.ron"))?;
-    let enemies = h2b_content::load_enemies(&args.content_dir.join("enemies.ron"))?;
+    let affixes = bb_content::load_affixes(&args.content_dir.join("affixes.ron"))?;
+    let bases = bb_content::load_bases(&args.content_dir.join("bases.ron"))?;
+    let attachments = bb_content::load_attachments(&args.content_dir.join("attachments.ron"))?;
+    let enemies = bb_content::load_enemies(&args.content_dir.join("enemies.ron"))?;
     let base_index: HashMap<&str, &BaseItem> =
         bases.iter().map(|b| (b.id.as_str(), b)).collect();
     let optimal_loadouts: HashMap<&str, Vec<String>> = bases
@@ -179,7 +179,7 @@ fn optimal_loadout(base: &BaseItem, attachments: &[Attachment]) -> Vec<String> {
 fn measure(
     item: &ItemInstance,
     base: &BaseItem,
-    affixes: &[h2b_core::Affix],
+    affixes: &[bb_core::Affix],
     attachments: &[Attachment],
     optimal_combo: &[String],
     enemies: &[Enemy],

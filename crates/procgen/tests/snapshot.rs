@@ -4,7 +4,7 @@
 //!
 //! Update with `cargo insta review` or `INSTA_UPDATE=always cargo test`.
 
-use h2b_procgen::{MapParams, generate_bsp};
+use bb_procgen::{MapParams, generate_bsp};
 
 #[test]
 fn bsp_seed_42_default_params() {

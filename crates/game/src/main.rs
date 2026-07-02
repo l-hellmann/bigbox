@@ -1,5 +1,5 @@
 //! macroquad shell: window, input collection, render loop. The state
-//! mutations all live in `h2b_game::World`; this file is the runtime
+//! mutations all live in `bb_game::World`; this file is the runtime
 //! adapter — keystrokes + mouse → `Command`s, world tick, draw.
 //!
 //! Rendering is **boxy 3D** (BoxHead-style): the world is a 2D plane in
@@ -9,13 +9,11 @@
 //! world **Y = up**. So gameplay coords need no translation; only height (Y)
 //! is invented here at the render layer.
 //!
-//! Content (enemy roster, base items, affixes) is loaded from RON on the
-//! **native** target via the filesystem. The wasm target can't read files at
-//! runtime — that build will `include_str!` the content instead, swapped in
-//! when wasm packaging lands (a separate ⏳ scope item).
+//! Content (enemy roster, base items, affixes) is embedded at build time via
+//! `include_str!`, so a shipped native binary is self-contained.
 
-use h2b_game::{Command, Content, Player, World};
-use h2b_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
+use bb_game::{Command, Content, Player, World};
+use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use macroquad::prelude::*;
 
 #[cfg(feature = "debug")]
@@ -30,18 +28,6 @@ mod ui;
 #[cfg(feature = "debug")]
 pub use pad::PadDiag;
 
-// On wasm, `rand`'s transitive `getrandom` needs a backend or it won't link.
-// Gameplay RNG is always seeded, so getrandom is never actually called —
-// register a trivial stub (deterministic zeros) rather than the `js` feature,
-// which would pull wasm-bindgen glue that macroquad's loader can't satisfy.
-#[cfg(target_arch = "wasm32")]
-getrandom::register_custom_getrandom!(getrandom_stub);
-#[cfg(target_arch = "wasm32")]
-fn getrandom_stub(buf: &mut [u8]) -> Result<(), getrandom::Error> {
-    buf.fill(0);
-    Ok(())
-}
-
 /// Camera offset above the player, in world units. With `CAMERA_BACK` this
 /// sets the tilt: atan(HEIGHT / BACK) ≈ 56° — the classic BoxHead overhead
 /// angle that still shows wall height.
@@ -50,16 +36,14 @@ const CAMERA_HEIGHT: f32 = 15.0;
 /// looks down-and-forward at the player from here.
 const CAMERA_BACK: f32 = 10.0;
 
-/// Map seed from `H2B_SEED`, if set and parseable. Native only — the web build
-/// reads the seed from the URL instead (see `resolve_run`).
-#[cfg(not(target_arch = "wasm32"))]
+/// Map seed from `BB_SEED`, if set and parseable.
 fn map_seed_env() -> Option<u64> {
-    std::env::var("H2B_SEED").ok().and_then(|s| s.parse().ok())
+    std::env::var("BB_SEED").ok().and_then(|s| s.parse().ok())
 }
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "head2box".into(),
+        window_title: "bigbox".into(),
         window_width: 1280,
         window_height: 720,
         // Render at the native (retina) framebuffer resolution. macroquad keeps
@@ -72,18 +56,17 @@ fn window_conf() -> Conf {
 }
 
 /// Content is **embedded at build time** via `include_str!`, not read from
-/// disk. That's the only thing that works on the wasm target (no filesystem)
-/// and keeps a shipped native binary self-contained — no content directory to
+/// disk — keeps a shipped native binary self-contained, no content directory to
 /// ship alongside it. A parse failure here means malformed RON in the tree,
 /// i.e. a build-time content bug, so panicking is correct. (Dev hot-reload, if
 /// we want it, layers back as a debug-only disk override behind a `cfg`.)
 fn load_content() -> Content {
     Content {
-        enemies: h2b_content::parse_enemies("enemies.ron", include_str!("../../content/data/enemies.ron"))
+        enemies: bb_content::parse_enemies("enemies.ron", include_str!("../../content/data/enemies.ron"))
             .expect("embedded enemies.ron"),
-        bases: h2b_content::parse_bases("bases.ron", include_str!("../../content/data/bases.ron"))
+        bases: bb_content::parse_bases("bases.ron", include_str!("../../content/data/bases.ron"))
             .expect("embedded bases.ron"),
-        affixes: h2b_content::parse_affixes("affixes.ron", include_str!("../../content/data/affixes.ron"))
+        affixes: bb_content::parse_affixes("affixes.ron", include_str!("../../content/data/affixes.ron"))
             .expect("embedded affixes.ron"),
     }
 }
@@ -98,9 +81,9 @@ enum Level {
     ArenaEmpty,
 }
 
-/// Parse a level name (the `arena` / `arena-empty` tokens shared by `H2B_LEVEL`
-/// and the web `?level=` query). Anything else → the BSP dungeon. Non-debug
-/// builds only — the debug build takes the level through clap's `LevelArg`.
+/// Parse a level name (the `arena` / `arena-empty` tokens from `BB_LEVEL`).
+/// Anything else → the BSP dungeon. Non-debug builds only — the debug build
+/// takes the level through clap's `LevelArg`.
 #[cfg(not(feature = "debug"))]
 fn level_from_str(s: &str) -> Level {
     match s {
@@ -111,17 +94,17 @@ fn level_from_str(s: &str) -> Level {
 }
 
 /// CLI surface for local dev — only compiled under the `debug` feature, so the
-/// prod/wasm build pulls in no clap. The `cargo arena` / `arena-empty` / `dbg`
+/// prod build pulls in no clap. The `cargo arena` / `arena-empty` / `dbg`
 /// aliases drive this; everything has an env-var or default fallback so a bare
 /// `cargo run` still works.
 #[cfg(feature = "debug")]
 #[derive(clap::Parser)]
-#[command(name = "h2b-game", about = "head2box runtime (debug build)")]
+#[command(name = "bb-game", about = "bigbox runtime (debug build)")]
 struct Cli {
     /// Starting level.
     #[arg(value_enum, default_value_t = LevelArg::Bsp)]
     level: LevelArg,
-    /// Map seed (overrides H2B_SEED; default 42).
+    /// Map seed (overrides BB_SEED; default 42).
     #[arg(long)]
     seed: Option<u64>,
 }
@@ -146,8 +129,8 @@ impl From<LevelArg> for Level {
 }
 
 /// Resolve `(level, seed)` for this run. Debug builds parse the CLI via clap;
-/// non-debug native reads `H2B_LEVEL` / `H2B_SEED`; web reads `?level=&seed=`
-/// from the page URL. Each path falls back to the BSP dungeon at seed 42.
+/// non-debug reads `BB_LEVEL` / `BB_SEED`. Each path falls back to the BSP
+/// dungeon at seed 42.
 #[cfg(feature = "debug")]
 fn resolve_run() -> (Level, u64) {
     use clap::Parser;
@@ -155,29 +138,12 @@ fn resolve_run() -> (Level, u64) {
     (cli.level.into(), cli.seed.or_else(map_seed_env).unwrap_or(42))
 }
 
-#[cfg(all(not(feature = "debug"), not(target_arch = "wasm32")))]
+#[cfg(not(feature = "debug"))]
 fn resolve_run() -> (Level, u64) {
-    let level = std::env::var("H2B_LEVEL")
+    let level = std::env::var("BB_LEVEL")
         .map(|s| level_from_str(&s))
         .unwrap_or(Level::Bsp);
     (level, map_seed_env().unwrap_or(42))
-}
-
-/// Web: read run config from the page URL query string via quad-url, so a URL
-/// like `index.html?seed=123&level=arena` reproduces an exact run. quad-url maps
-/// `?seed=123` to the arg `--seed=123`, which `easy_parse` splits back out.
-#[cfg(all(not(feature = "debug"), target_arch = "wasm32"))]
-fn resolve_run() -> (Level, u64) {
-    let mut level = Level::Bsp;
-    let mut seed = None;
-    for param in quad_url::get_program_parameters() {
-        match quad_url::easy_parse(&param) {
-            Some(("seed", Some(v))) => seed = v.parse().ok(),
-            Some(("level", Some(v))) => level = level_from_str(v),
-            _ => {}
-        }
-    }
-    (level, seed.unwrap_or(42))
 }
 
 fn build_map(level: Level, seed: u64) -> Map {

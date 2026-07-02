@@ -1,4 +1,4 @@
-//! End-to-end snapshot tests. Invokes the `h2b-sim` binary, captures stdout,
+//! End-to-end snapshot tests. Invokes the `bb-sim` binary, captures stdout,
 //! and locks it via `insta`. Any drift in roll mechanics, aggregation, or
 //! starter content trips the snapshot diff, forcing conscious review.
 //!
@@ -10,21 +10,21 @@
 use std::process::Command;
 
 fn run_sim(args: &[&str]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_h2b-sim"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bb-sim"))
         .args(args)
         .arg("--content-dir")
         .arg("../content/data")
         .output()
-        .expect("failed to spawn h2b-sim");
+        .expect("failed to spawn bb-sim");
 
     assert!(
         output.status.success(),
-        "h2b-sim exited non-zero (status {:?}). stderr:\n{}",
+        "bb-sim exited non-zero (status {:?}). stderr:\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr),
     );
 
-    String::from_utf8(output.stdout).expect("h2b-sim stdout not valid utf-8")
+    String::from_utf8(output.stdout).expect("bb-sim stdout not valid utf-8")
 }
 
 #[test]

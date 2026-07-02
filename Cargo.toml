@@ -16,4 +16,42 @@ ron = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 insta = "1"
+# Bevy is the new engine (migration from macroquad in progress — see
+# .attic/migration/plan.md). macroquad is kept only until the game crate's
+# render/input/UI/debug layers finish porting, then removed.
+#
+# `default-features = false` + explicit list, dropping `bevy_audio`: it links
+# ALSA (via cpal/rodio), which collides with macroquad's `quad-alsa-sys` while
+# both crates coexist. Audio is a deferred scope item anyway (CLAUDE.md open
+# question #4) — re-add `bevy_audio` once macroquad is gone.
+bevy = { version = "0.19", default-features = false, features = [
+    "std",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_state",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_gltf",
+    "bevy_winit",
+    "bevy_ui",
+    "bevy_text",
+    "default_font",
+    "bevy_gizmos",
+    "bevy_gilrs",
+    "png",
+    "x11",
+    "wayland",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
 macroquad = "0.4"
+
+# Bevy cold builds are heavy; compile all dependencies optimized even in dev so
+# the debug build stays playable, while keeping our own crates fast to rebuild.
+# (Standard Bevy dev-profile recommendation.)
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

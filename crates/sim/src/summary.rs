@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-use h2b_core::{Affix, Enemy, ItemInstance, Rarity, progression};
+use bb_core::{Affix, Enemy, ItemInstance, Rarity, progression};
 
 pub struct Summary {
     drops: u32,
@@ -171,7 +171,7 @@ impl Summary {
     ) -> io::Result<()> {
         let index: HashMap<&str, &Affix> = affixes.iter().map(|a| (a.id.as_str(), a)).collect();
 
-        writeln!(out, "=== head2box-sim summary ===")?;
+        writeln!(out, "=== bigbox-sim summary ===")?;
         writeln!(
             out,
             "seed: {seed}  ilvl: {ilvl}  drops: {drops}",

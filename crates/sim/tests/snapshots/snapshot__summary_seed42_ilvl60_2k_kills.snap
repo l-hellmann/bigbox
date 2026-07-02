@@ -2,7 +2,7 @@
 source: crates/sim/tests/snapshot.rs
 expression: out
 ---
-=== head2box-sim summary ===
+=== bigbox-sim summary ===
 seed: 42  ilvl: 60  drops: 2000
 
 Rarity        count      pct    avg_affixes

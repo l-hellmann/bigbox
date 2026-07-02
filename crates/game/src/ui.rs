@@ -6,7 +6,7 @@
 //! so these stay read-only on the world.
 
 use crate::render::rarity_color;
-use h2b_game::{Content, World};
+use bb_game::{Content, World};
 use macroquad::prelude::*;
 
 // ---- theme ----

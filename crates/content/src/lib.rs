@@ -6,7 +6,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use h2b_core::{Affix, Attachment, BaseItem, Enemy};
+use bb_core::{Affix, Attachment, BaseItem, Enemy};
 
 #[derive(Debug, Error)]
 pub enum ContentError {

@@ -2,19 +2,19 @@
 //! the flow field and weighted spawn picks, prints to stdout.
 //!
 //! Examples:
-//!   h2b-procgen-viz --seed 42
-//!   h2b-procgen-viz --seed 7 --width 50 --height 20 --color
-//!   h2b-procgen-viz --seed 42 --enemies 12 --flow --color
+//!   bb-procgen-viz --seed 42
+//!   bb-procgen-viz --seed 7 --width 50 --height 20 --color
+//!   bb-procgen-viz --seed 42 --enemies 12 --flow --color
 
 use std::io::{self, BufWriter, Write};
 
 use clap::Parser;
 use rand::{SeedableRng, rngs::StdRng};
 
-use h2b_procgen::{FlowField, MapParams, Tile, UNREACHABLE, generate_bsp, pick_spawn_points};
+use bb_procgen::{FlowField, MapParams, Tile, UNREACHABLE, generate_bsp, pick_spawn_points};
 
 #[derive(Parser, Debug)]
-#[command(name = "h2b-procgen-viz", about = "Visualize a procgen map (ASCII).")]
+#[command(name = "bb-procgen-viz", about = "Visualize a procgen map (ASCII).")]
 struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
 
 fn render<W: Write>(
     out: &mut W,
-    map: &h2b_procgen::Map,
+    map: &bb_procgen::Map,
     field: Option<&FlowField>,
     spawns: &[(u32, u32)],
     args: &Args,
