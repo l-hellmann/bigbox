@@ -1,8 +1,14 @@
-# Project: BoxHead-Inspired ARPG (wasm)
+# Project: bigbox — BoxHead-Inspired ARPG (Bevy, wasm)
 
-A top-down twin-stick shooter with ARPG progression, procgen levels, and a deep loot system. Inspired by BoxHead 2 for combat feel, Crimsonland/Nation Red for arena flow, and Diablo II/III for loot-rarity flow. The stat-aggregation math is borrowed from Path of Exile / Last Epoch — it's the de-facto ARPG standard and we don't need to reinvent it.
+A top-down twin-stick shooter with deep ARPG progression, procgen levels, and a deep loot system. Inspired by BoxHead 2 for combat feel, Crimsonland/Nation Red for arena flow, and Diablo II/III for loot-rarity flow. The stat-aggregation math is borrowed from Path of Exile / Last Epoch — it's the de-facto ARPG standard and we don't need to reinvent it.
 
-Target: browser via WebAssembly. Single-player first; multiplayer is explicitly out of scope until v1 ships.
+Target: **desktop-first** — native builds for Windows / macOS / Linux. Single-player first; **coop / PvP multiplayer is a committed roadmap item** for this product (see Multiplayer posture). **Web/wasm is explicitly NOT a target** — dropping it removes Bevy's one real downside (large wasm binaries) and unlocks the full native rendering backend.
+
+> **Fork note (2026-07-02).** `bigbox` is the **deep-ARPG** half of a two-way split from `head2box`. `head2box` stays a lean **macroquad twin-stick arena shooter** (PvE + local/online arena MP); `bigbox` keeps the full loot system and moves to **Bevy** because the ceiling we hit was *rendering/assets* — macroquad has no GLTF/skeletal-animation/PBR/lighting, and building that on raw miniquad means writing a 3D engine.
+>
+> The two repos are **duplicate-and-diverge**, not a shared workspace: shared logic (`core`, `content`, `procgen`, the engine-agnostic `game` World/sim) was copied in and now evolves independently here. Genuine bugfixes to shared logic get hand-ported between repos.
+>
+> **Migration status:** the `game` crate in this repo is still the *inherited macroquad shell*. Rendering/input/window/UI (`render.rs`, `main.rs`, `input.rs`, `ui.rs`, debug egui) are being ported to Bevy; the headless simulation (`game/lib.rs` — World, tick, `Command` stream) is engine-agnostic and ports largely unchanged. Crate names still carry the `head2box-*` / `h2b_*` prefixes — renaming to `bigbox-*` is a pending migration step.
 
 ---
 
@@ -22,7 +28,9 @@ When a mechanic could go either way (crafting currency? deterministic re-roll? p
 
 ## Multiplayer posture
 
-**v1 is single-player.** Coop (cooperative PvE) is on the roadmap for a later release using **[SpacetimeDB](https://spacetimedb.com)** as the netcode + state-sync layer. PvP arenas are a separate, future scope after coop is solid and will likely need additional layers on top.
+**v1 ships single-player**, but multiplayer is a *committed* direction for this product (not a "maybe someday"): coop (cooperative PvE) first, PvP after. The netcode + state-sync layer is **[SpacetimeDB](https://spacetimedb.com)**. PvP is a separate, later scope after coop is solid and will likely need additional layers on top. Keep the architectural habits below from day one so the port stays cheap — this matters *more* here than it did pre-split, because multiplayer is on this repo's actual roadmap.
+
+> **Bevy interaction:** the SpacetimeDB module is engine-agnostic Rust and reuses `core` unchanged regardless of the client. On the Bevy client side, subscribe-and-react table updates map naturally onto Bevy systems/events, and the **native** Rust client SDK sidesteps wasm-client friction entirely — desktop-only makes the netcode integration meaningfully simpler.
 
 ### Why SpacetimeDB for coop
 
@@ -34,7 +42,7 @@ Reference: `.attic/context/spacetime-db.md` has the docs snapshot.
 
 Retrofitting netcode is expensive even with SpacetimeDB. Three habits, adopted now, keep multiplayer cheap to add without slowing single-player iteration:
 
-1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer. *Already concrete in v1*: `h2b_game::Command::{Move, Fire}`; the macroquad layer never mutates the world directly, it just emits commands into `World::apply`.
+1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer. *Already concrete*: `h2b_game::Command::{Move, Fire}`; the render/input layer never mutates the world directly, it just emits commands into `World::apply`. (This stays true across the Bevy port — the Bevy input systems emit the same `Command`s.)
 2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. On the coop branch, this state becomes the SpacetimeDB table schema; if it can't serialize, it can't replicate.
 3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()` (use `ctx.timestamp` once we're in reducer-land), no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the load-bearing property for both client-side prediction and reducer rollback.
 
@@ -55,19 +63,20 @@ PvP balance must be **separate from PvE** (damage caps, CC limits, distinct stat
 
 ### Before committing fully
 
-One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust client SDK compiles to wasm cleanly** and plays nicely with macroquad's async story. If that's broken, the TypeScript client + Rust core split via wasm interop is plan B. Do this spike when we're close to starting coop work, not now.
+One spike worth doing before we lean hard on SpacetimeDB: verify the **native Rust client SDK integrates cleanly with Bevy's runtime** (the SDK's own async/threading vs Bevy's schedule). Desktop-only removes the old wasm-compilation risk entirely — this is now a straightforward native-integration check. Do this spike when we're close to starting coop work, not now.
 
 ---
 
 ## Stack
 
 - **Language:** Rust
-- **Engine:** `macroquad` for the prototype (lightweight, clean wasm story, fast iteration). Re-evaluate Bevy at the point where ECS-shaped pain shows up — not before.
-- **ECS:** `hecs` (small, embeddable, no framework lock-in). Only adopt if hand-rolled component storage starts hurting.
-- **Serde:** `serde` + `ron` for content files. RON over JSON/TOML because it matches Rust's type system and round-trips enums cleanly.
-- **RNG:** `rand` with explicit `StdRng` seeded from a known source. **Never** use `thread_rng` for anything gameplay-affecting — determinism matters for procgen, loot reproducibility, and debugging.
-- **Persistence (web):** IndexedDB via `gloo-storage` or similar. Save on debounce, test the "tab closed mid-fight" path early.
-- **Build:** `cargo` targeting `wasm32-unknown-unknown` for web, loaded by macroquad's own JS shim (`mq_js_bundle.js`) — **not** `wasm-bindgen`. macroquad's loader provides the raw wasm imports itself; pulling in wasm-bindgen glue (via gilrs or getrandom's `js` feature) leaves unresolved `__wbindgen_*` imports the loader can't satisfy. `make web` / `make web-serve`; details + caveats in `/web/README.md`. Native build kept working for fast iteration and headless tests.
+- **Engine:** **Bevy** (chosen over macroquad — resolves open question #1). The pain that triggered the split was *rendering/assets*: we need GLTF import with skeletal animation, PBR materials, lighting/shadows, a real transform hierarchy, and an asset pipeline with hot-reload — all first-class in Bevy, none present in macroquad (which is primitives + hand-written GLSL only). Bevy's ECS also retires the "reinventing systems/queries" tripwire permanently. Desktop-native is Bevy's strongest, best-supported target — the wasm binary-size problem doesn't apply. Accepted costs: Bevy's per-release API churn and slower cold builds (mitigate with dynamic linking in dev).
+- **ECS:** **Bevy's built-in ECS.** (The old `hecs` note is moot — Bevy *is* the ECS.) The engine-agnostic `game` simulation can stay a monolithic `World::tick` called from one Bevy system to de-risk the port, then decompose into ECS systems where it pays off. Don't decompose everything up front.
+- **Serde:** `serde` + `ron` for content files. RON over JSON/TOML because it matches Rust's type system and round-trips enums cleanly. (Bevy's asset layer can load RON via `bevy_common_assets` or a custom `AssetLoader` for in-engine hot-reload; the headless `content` loaders stay as-is for sim/tests.)
+- **RNG:** `rand` with explicit `StdRng` seeded from a known source. **Never** use `thread_rng` for anything gameplay-affecting — determinism matters for procgen, loot reproducibility, and (now doubly) client-side prediction + reducer rollback.
+- **Persistence:** native save files — a per-user save dir (via `directories`/`dirs`), RON or bincode. Save on debounce; test the "quit/crash mid-fight" recovery path early.
+- **Rendering backend:** native `wgpu` — Vulkan (Linux/Windows), Metal (macOS), DX12 (Windows). No WebGL2/web feature ceiling, so shadows, compute, and modern material features are all on the table.
+- **Build:** plain `cargo build` / `cargo run` per platform. **No wasm, no wasm-bindgen, no JS glue** — head2box's entire `/web` chain (`mq_js_bundle.js`, `quad-url`, `quad-gamepad.js`, the custom-getrandom stub) is *deleted*, not ported. Native gamepads via `bevy_gilrs` (or `gilrs` directly — no web-backend/wasm-bindgen friction anymore). Distribution is a native binary + assets folder per OS.
 
 ---
 
@@ -80,21 +89,21 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **Rust clie
   /sim            ✅ CLI loot simulator (CSV + summary modes, snapshot-locked)
   /procgen        ✅ BSP map generation, flow-field pathing, weighted spawn placement
   /procgen-viz    ✅ CLI visualizer for procgen output (map / flow / spawn picks)
-  /game           ✅ boxy-3D macroquad shell: window, WASD movement (wall sliding),
-                     mouse-aimed shooting (ground-plane raycast aim), wave-spawned
-                     enemies (FlowField pathing), projectile hit detection via
-                     core::resolve_hit, loot drops + walk-over pickup, contact damage,
-                     floating enemy health bars, death/restart. Angled BoxHead
-                     follow-cam. Live-tuning egui
-                     debug overlay behind `--features debug` (runtime Tunables).
-/assets           ⏳ sprites, audio (placeholder/CC0 until art pipeline exists)
-/web              ✅ wasm build: index.html + macroquad JS loader, built via
-                     `make web`. Run config (seed/level) from the URL query
-                     (`?seed=123&level=arena`, via quad-url). Keyboard/mouse +
-                     gamepad (quad-gamepad.js); no debug overlay — see README
+  /game           🔧 game logic + shell. `lib.rs` (World, tick, Command stream,
+                     movement, enemies, projectiles, waves, loot pickup, rack +
+                     inventory) is engine-agnostic and ports to Bevy unchanged.
+                     The macroquad-coupled parts (render.rs, main.rs, input.rs,
+                     ui.rs, debug egui) are INHERITED and being ported to Bevy:
+                     window + follow-cam → Bevy Camera3d, primitive/OBJ draws →
+                     Bevy meshes/GLTF scenes, macroquad input → bevy_input, the
+                     2D HUD/inventory → bevy_ui, debug egui → bevy_egui.
+/assets           ⏳ GLTF/GLB models + animations, textures, audio (CC0
+                     placeholders until art pipeline exists) — loadable
+                     through Bevy's asset server with hot-reload.
+(no /web)          — desktop-only; head2box's /web wasm chain is not carried over.
 ```
 
-Keep `core` free of rendering and IO dependencies. It must compile and run in a headless test or CLI sim without dragging in macroquad. This is the single most important architectural rule — it's what makes the loot simulator possible and what keeps unit tests fast.
+Keep `core` free of rendering and IO dependencies. It must compile and run in a headless test or CLI sim without dragging in Bevy. This is the single most important architectural rule — it's what makes the loot simulator possible, what keeps unit tests fast, and what lets `core` drop unchanged into a SpacetimeDB reducer.
 
 ---
 
@@ -190,10 +199,10 @@ Hand-authored room templates and biomes are deferred — BSP rooms are enough sc
 
 ## Conventions
 
-- **Pool everything in hot paths.** No per-frame allocation for projectiles, particles, damage numbers. Pre-size pools.
-- **Batch the JS↔wasm boundary.** Expose `tick(dt)` and `get_render_buffer()`, not per-entity calls.
-- **Sprite batching:** one draw call per texture atlas per frame. Pack aggressively.
-- **Content is data, not code.** Affixes, base items, enemies, drop tables → RON files in `/crates/content`. Hot-reload in dev builds.
+- **Pool everything in hot paths.** No per-frame allocation for projectiles, particles, damage numbers. Under Bevy this means reusing entities/components (or a pool resource) rather than spawn/despawn churn in the swarm-heavy tick.
+- **Let Bevy own rendering.** The Bevy ECS *is* the render source of truth — no hand-rolled render buffers. Keep the sim/render split clean: `game/lib.rs` mutates the World; Bevy systems read it and drive `Transform`/mesh/material. Ephemeral visuals (particles, screen shake, tweens) live render-side, never in the replicated World state.
+- **Batch by material/mesh.** Bevy auto-batches by pipeline; keep material and mesh handles shared (don't mint a unique material per entity) so instancing kicks in. Pack textures into atlases where it helps.
+- **Content is data, not code.** Affixes, base items, enemies, drop tables → RON files in `/crates/content`. Hot-reload in dev builds (headless loaders for sim/tests; Bevy `AssetLoader` for in-engine reload).
 - **Determinism:** seeded RNG threaded through all generation. Every drop, every map, every encounter should be reproducible from `(world_seed, event_id)`.
 - **Tests:** `core` has unit tests for stat math, roll mechanics, combat, aggregation, attachments, progression. `procgen` has BFS / connectivity / spawn-bias property tests. `sim` has snapshot tests (`insta`) that lock CSV + summary output for fixed seeds. Run native, all fast.
 - **Error handling:** `Result` + `thiserror` for library errors. `anyhow` only at binary boundaries.
@@ -227,9 +236,11 @@ feel oppressive, is the fire rate satisfying, how dense should waves be.
 cargo run -p head2box-game --features debug   # or: cargo dbg
 ```
 
-Feature-gated: the `debug` feature pulls the local-dev-only deps (`egui-macroquad`,
+> **Port note:** the overlay is being moved from `egui-macroquad` to **`bevy_egui`**. The load-bearing design below (Tunables on `World`, `debug_*` methods, live sliders bound to `world.tunables`) is engine-agnostic and carries over unchanged — only the egui *host* changes.
+
+Feature-gated: the `debug` feature pulls the local-dev-only deps (the egui host,
 `serde`/`ron` for tunable export, and `clap` for CLI parsing), so a normal
-`cargo build`/`--release` and the wasm build compile none of it. **F1** toggles
+`cargo build`/`--release` compiles none of it. **F1** toggles
 the panel. `.cargo/config.toml` defines shortcut aliases — `cargo dbg` (BSP
 dungeon), `cargo arena`, `cargo arena-empty`. Aliases can't set env vars, so the
 level rides in as a CLI arg (`-- arena`); under the `debug` feature a clap parser
@@ -312,7 +323,7 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
 - ✅ **Game runtime (window + movement + shooting):** boxy-3D macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor raycast onto the ground plane). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here. Also takes **twin-stick gamepad** input via `gilrs` (left stick = move, right stick = aim, right trigger = fire); the `pad` module resolves one `PadInput`/frame and `collect_input` merges it with keyboard/mouse (either works). Gamepad works **native and web (confirmed on real hardware in-browser), but by different paths**: gilrs's web backend reaches the browser Gamepad API through `wasm-bindgen`, whose glue macroquad's plain loader can't satisfy — so gilrs is native-only, and on wasm the `pad` module reads the Gamepad API itself via a small miniquad plugin (`web/quad-gamepad.js`) that passes the numeric axes/buttons straight across the boundary (no wasm-bindgen, no marshaling). Same twin-stick mapping; both arms cfg-split in `pad.rs`. On web the browser only surfaces a pad after a button press on it (privacy gate) — `quad-gamepad.js` logs connect/disconnect and `index.html` shows a self-dismissing hint.
 - ✅ **Game runtime (enemies + hit detection + loot pickup):** waves spawn via `pick_spawn_points`, path to the player with `FlowField` (recomputed per player-tile-change), take projectile hits through `core::combat::resolve_hit` (enemy armor/dodge applies), and on death award XP + roll an `ItemInstance` drop the player walks over to collect. Touching enemies drain life; zero life → death + restart. Loot rolls and spawns are seeded per-event from `(world_seed, event_id)`; every enemy/drop carries a stable id (the eventual table key + interpolation match key). **Player loadout is wired:** the player is armed with a pistol at setup (`World::equip_base`) and a picked-up weapon auto-equips when it's a strict DPS upgrade (`World::equip` → `aggregate_item` → `Weapon::from_stats`, routing damage/fire-rate/crit into `Tunables`, the fire path's read surface). Armor isn't equipped yet — only weapons. **Weapons stack into a switchable rack** (`World::loadout`, a `Vec<EquippedWeapon>` each aggregated once on acquisition) holding **one weapon per archetype** — the best instance of each base. A pickup of a new archetype claims a slot; a better instance of an archetype already racked replaces it (the displaced one falls to inventory); a worse/equal duplicate goes straight to inventory (`World::acquire_item`). `Command::{SwitchWeapon, CycleWeapon}` (number keys / Q-E / mouse wheel / controller bumpers) re-point `active` and reseed the tunables. Switching needs no content (the rack is precomputed), so it resolves in the `apply` command stream with no extra plumbing. **Inventory screen** (`I` / `Tab`, pauses the sim): a macroquad-drawn modal (`game/src/ui.rs` — a small 2D widget layer, since egui is debug/native-only and can't link on wasm; HUD + inventory text render in Quantico, bundled at `game/assets/fonts/quantico` under the OFL and embedded via `include_bytes!` so it's wasm-safe with no runtime fetch) listing the equipped rack (click to switch) and the collected-item bag (click a weapon → `World::equip_from_inventory`, which unlike a pickup places the chosen weapon into its archetype slot *unconditionally* and drops the displaced one back to the bag). Armor is listed but not yet equippable. **Archetypes fire distinctly** (game-layer only, keyed by base id in `fire_profile`): pistol/SMG fire a single shot, the shotgun fires a 6-pellet damage-split cone (point-blank ≈ full damage, fans out at range), and the rocket launcher lobs a slow `aoe_radius` shot that detonates on enemy *or* wall impact, dealing full damage to all enemies in the blast (no falloff) plus a transient `Explosion` render marker. The loot sim still models a weapon as one hit, so pellet/AoE can shift real DPS-vs-armor away from the sim's numbers — retune there if it drifts.
-- ⏳ **Persistence:** IndexedDB save on debounce (web target). The "tab closed mid-fight" path needs to work before save format gets locked.
+- ⏳ **Persistence:** native save-file on debounce. The "quit/crash mid-fight" path needs to work before save format gets locked.
 
 ---
 
@@ -325,6 +336,7 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - Crafting currencies
 - Skill tree until core combat feels good
 - Custom art (use CC0 placeholders; art pipeline is a separate project)
+- **Web / wasm build** — desktop-first; wasm was dropped as a requirement (revisit only on real demand)
 - Mobile / touch controls
 
 ---
@@ -341,7 +353,7 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 
 ## Open questions to resolve early
 
-1. macroquad vs Bevy — start with macroquad, but set a tripwire: if we end up reinventing systems/queries, switch. **Still open** — game runtime not yet started.
+1. ~~macroquad vs Bevy~~ **Resolved: Bevy.** Split from head2box; the rendering/assets ceiling (GLTF/skeletal animation/PBR/lighting) forced it. head2box keeps macroquad for the lean wasm arena shooter; bigbox is desktop-native Bevy.
 2. Save format versioning strategy — bump-on-break with migrations, or backwards-compatible? Decide before the first persistent save.
 3. ~~Procgen approach — BSP, WFC, chunk-stitched, or hybrid?~~ **Resolved: BSP**. Recursive space-partition with L-corridor connections, deterministic from seed. Hand-authored room templates can layer on top later if needed; the BSP cleanly partitions the work.
-4. Audio stack — `kira` is the current best-in-class for Rust games, works in wasm. Confirm at the point audio matters.
+4. Audio stack — `bevy_audio` for simple needs, or `bevy_kira_audio` (`kira`) for mixing/effects/spatial. Desktop-only drops the browser-format caveats. Confirm at the point audio matters.
