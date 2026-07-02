@@ -1,6 +1,12 @@
-//! macroquad shell: window, input collection, render loop. The state
-//! mutations all live in `bb_game::World`; this file is the runtime
-//! adapter — keystrokes + mouse → `Command`s, world tick, draw.
+//! Bevy shell: window, resources, world tick, follow-camera. The state
+//! mutations all live in `bb_game::World`; this file is the runtime adapter.
+//!
+//! Migration status (macroquad → Bevy): this is **Phase 1** — window + camera +
+//! the world-tick loop. Input (Phase 2), 3D rendering (Phase 3), HUD/inventory
+//! (Phase 4) and the debug overlay (Phase 5) still live in the inherited
+//! macroquad modules below and are ported in later phases. Until Phase 3 lands
+//! nothing is drawn to screen — the world ticks headless behind the camera.
+//! See `.attic/migration/plan.md`.
 //!
 //! Rendering is **boxy 3D** (BoxHead-style): the world is a 2D plane in
 //! gameplay terms, drawn in 3D space with extruded-cube walls and an angled
@@ -12,20 +18,30 @@
 //! Content (enemy roster, base items, affixes) is embedded at build time via
 //! `include_str!`, so a shipped native binary is self-contained.
 
-use bb_game::{Command, Content, Player, World};
+use bb_game::{Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
-use macroquad::prelude::*;
+use bevy::prelude::*;
 
+// Inherited macroquad modules — not yet wired into the Bevy app. They stay
+// compiled (so they don't bitrot) until their porting phase; `allow(dead_code)`
+// silences the transitional "unused" noise. Removed file-by-file as each phase
+// rebuilds it as Bevy systems.
 #[cfg(feature = "debug")]
+#[allow(dead_code)]
 mod debug;
+#[allow(dead_code)]
 mod input;
+#[allow(dead_code)]
 mod pad;
+#[allow(dead_code)]
 mod render;
+#[allow(dead_code)]
 mod ui;
 
 // Re-export the gamepad diagnostic type so `crate::PadDiag` (used by the debug
-// overlay) keeps resolving from the crate root after the move into `pad`.
+// overlay) keeps resolving from the crate root.
 #[cfg(feature = "debug")]
+#[allow(unused_imports)]
 pub use pad::PadDiag;
 
 /// Camera offset above the player, in world units. With `CAMERA_BACK` this
@@ -41,25 +57,10 @@ fn map_seed_env() -> Option<u64> {
     std::env::var("BB_SEED").ok().and_then(|s| s.parse().ok())
 }
 
-fn window_conf() -> Conf {
-    Conf {
-        window_title: "bigbox".into(),
-        window_width: 1280,
-        window_height: 720,
-        // Render at the native (retina) framebuffer resolution. macroquad keeps
-        // its 2D coordinate + mouse API logical regardless, so the HUD layout is
-        // unchanged — but it gives miniquad/egui the correct DPI scale, which
-        // fixes egui pointer mapping (dropped clicks) on high-DPI displays.
-        high_dpi: true,
-        ..Default::default()
-    }
-}
-
 /// Content is **embedded at build time** via `include_str!`, not read from
 /// disk — keeps a shipped native binary self-contained, no content directory to
 /// ship alongside it. A parse failure here means malformed RON in the tree,
-/// i.e. a build-time content bug, so panicking is correct. (Dev hot-reload, if
-/// we want it, layers back as a debug-only disk override behind a `cfg`.)
+/// i.e. a build-time content bug, so panicking is correct.
 fn load_content() -> Content {
     Content {
         enemies: bb_content::parse_enemies("enemies.ron", include_str!("../../content/data/enemies.ron"))
@@ -178,190 +179,120 @@ fn new_world(level: Level, seed: u64, content: &Content) -> World {
     world
 }
 
-#[macroquad::main(window_conf)]
-async fn main() {
+// ---- Bevy resources ----
+
+/// The engine-agnostic simulation, wrapped so `lib.rs` stays free of Bevy
+/// derives. One `World::tick` per frame drives everything.
+#[derive(Resource)]
+struct Sim(World);
+
+/// Embedded content (enemies / bases / affixes), read-only after load.
+#[derive(Resource)]
+struct GameContent(Content);
+
+/// The level + seed for this run, kept so a restart can rebuild the world.
+#[derive(Resource, Clone, Copy)]
+struct RunConfig {
+    level: Level,
+    seed: u64,
+}
+
+/// Inventory-open pause gate. The inventory modal (Phase 4) suspends the sim
+/// while open; for now it defaults unpaused and nothing toggles it.
+#[derive(Resource)]
+struct Paused(bool);
+
+/// Marks the follow-camera so `camera_follow` can re-target it each frame.
+#[derive(Component)]
+struct FollowCam;
+
+/// System set wrapping the world tick, so Phase 2 input (before) and the
+/// camera-follow (after) can order around it.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SimSet;
+
+fn main() {
     let (level, seed) = resolve_run();
+
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "bigbox".into(),
+                resolution: (1280, 720).into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        // The old macroquad clear color.
+        .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
+        .insert_resource(RunConfig { level, seed })
+        .insert_resource(Paused(false))
+        .add_systems(Startup, setup)
+        .configure_sets(Update, SimSet.run_if(not_paused))
+        .add_systems(Update, tick_world.in_set(SimSet))
+        .add_systems(Update, camera_follow.after(SimSet))
+        .add_systems(Update, report_sim)
+        .run();
+}
+
+/// Startup: load content, build the world, spawn the follow-camera over the
+/// player spawn. World + content become resources.
+fn setup(mut commands: Commands, run: Res<RunConfig>) {
     let content = load_content();
-    let mut world = new_world(level, seed, &content);
+    let world = new_world(run.level, run.seed, &content);
 
-    // Bundled UI/HUD font (Quantico), loaded once.
-    let font = ui::load_font();
-    // Procedurally-generated render textures, built once (needs the GL context).
-    let assets = render::RenderAssets::load();
+    let (eye, target) = camera_pose(world.player.x, world.player.y);
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_translation(eye).looking_at(target, Vec3::Y),
+        FollowCam,
+    ));
 
-    #[cfg(feature = "debug")]
-    let mut dbg = debug::DebugUi::new();
+    commands.insert_resource(GameContent(content));
+    commands.insert_resource(Sim(world));
+}
 
-    let mut pads = pad::Pads::new();
+/// Run condition: sim + camera advance only while unpaused.
+fn not_paused(paused: Res<Paused>) -> bool {
+    !paused.0
+}
 
-    // Aim-source latch (mouse vs. pad), carried across frames.
-    let mut aim_state = input::AimState::new(mouse_position());
+/// One `World::tick` per frame. Input drainage lands in Phase 2; for now the
+/// world advances on `dt` alone (waves, enemy steering, projectiles).
+fn tick_world(mut sim: ResMut<Sim>, content: Res<GameContent>, time: Res<Time>) {
+    sim.0.tick(time.delta_secs(), &content.0);
+}
 
-    // UI state: the inventory modal pauses the sim while open. Client-side only,
-    // so it lives here rather than on the world.
-    let mut inventory_open = false;
-
-    loop {
-        let dt = get_frame_time();
-
-        // Death closes the inventory (no browsing the bag on the dead screen).
-        if world.game_over {
-            inventory_open = false;
-        }
-        // Esc backs out of the inventory first, then quits.
-        if is_key_pressed(KeyCode::Escape) {
-            if inventory_open {
-                inventory_open = false;
-            } else {
-                break;
-            }
-        }
-        // I / Tab toggle the inventory while alive.
-        if !world.game_over && (is_key_pressed(KeyCode::I) || is_key_pressed(KeyCode::Tab)) {
-            inventory_open = !inventory_open;
-        }
-        // Restart from the dead screen.
-        if world.game_over && is_key_pressed(KeyCode::R) {
-            world = new_world(level, seed, &content);
-        }
-
-        // Build the follow-cam first: aim raycasting needs it to unproject
-        // the cursor onto the ground plane.
-        let camera = build_camera(&world.player);
-        let pad = pads.read(world.tunables.stick_deadzone);
-        let mouse_hit = ground_hit(&camera);
-
-        // Resolve this frame's aim (mouse-vs-pad latch + 3D crosshair point).
-        let aim = aim_state.update(&world.player, &pad, mouse_position(), mouse_hit);
-
-        // Debug overlay runs before input so its spawns/tunable edits apply to
-        // this frame's tick, and so it can swallow clicks that land on the
-        // panel (`block_fire`).
-        #[cfg(feature = "debug")]
-        let block_fire = {
-            dbg.handle_toggle();
-            let pad_diag = pads.debug_diag();
-            dbg.run(&mut world, &content, aim.hit.map(|h| (h.x, h.z)), &pad_diag)
-        };
-        #[cfg(not(feature = "debug"))]
-        let block_fire = false;
-
-        // Gameplay input + simulation are suspended while the inventory is open.
-        if !inventory_open {
-            for cmd in input::collect_input(aim.dir, &pad) {
-                // Swallow fire and weapon-switch input while the cursor is over
-                // the debug panel — so clicking a button or scrolling a slider
-                // doesn't also shoot or cycle weapons.
-                if block_fire
-                    && matches!(
-                        cmd,
-                        Command::Fire { .. }
-                            | Command::SwitchWeapon { .. }
-                            | Command::CycleWeapon { .. }
-                    )
-                {
-                    continue;
-                }
-                world.apply(cmd, dt);
-            }
-            world.tick(dt, &content);
-        }
-
-        // ---- 3D pass ----
-        // Rebuild the camera from the *post-tick* player position. The `camera`
-        // above was built before the tick (aim unprojection needs it early); if
-        // we rendered with it, the whole scene would lag the player by one
-        // frame's movement (`velocity × dt`), which shimmers under variable
-        // frame times. Re-targeting here keeps the player dead-centre and the
-        // world rock-steady.
-        let camera = build_camera(&world.player);
-        clear_background(Color::new(0.02, 0.02, 0.03, 1.0));
-        set_camera(&camera);
-        render::draw_scene(&world, &content, aim.hit, &assets);
-        #[cfg(feature = "debug")]
-        if dbg.show_flow() {
-            render::draw_flow_field(&world);
-        }
-
-        // ---- 2D overlay pass ----
-        set_default_camera();
-        render::draw_hud(&font, &world);
-
-        // Inventory modal (paused). Immediate-mode: it reports the clicked
-        // action and we mutate the world in response.
-        if inventory_open {
-            let mouse = mouse_position();
-            let click = is_mouse_button_pressed(MouseButton::Left);
-            if let Some(action) = ui::draw_inventory(&font, &world, &content, mouse, click) {
-                match action {
-                    ui::InvAction::Close => inventory_open = false,
-                    ui::InvAction::Switch(slot) => {
-                        world.switch_weapon(slot);
-                    }
-                    ui::InvAction::Equip(index) => {
-                        world.equip_from_inventory(index, &content);
-                    }
-                }
-            }
-        }
-        #[cfg(feature = "debug")]
-        if dbg.show_entity_stats() {
-            render::draw_entity_stats(&world, &content, &camera);
-        }
-
-        // ---- debug overlay (on top of everything) ----
-        #[cfg(feature = "debug")]
-        dbg.draw();
-
-        next_frame().await;
+/// Re-target the follow-cam from the *post-tick* player position (ordered after
+/// `SimSet`) so the world doesn't lag the player by one frame. Orientation is
+/// fixed; only translation tracks — matching the old macroquad behaviour.
+fn camera_follow(sim: Res<Sim>, mut cam: Query<&mut Transform, With<FollowCam>>) {
+    let p = &sim.0.player;
+    let (eye, target) = camera_pose(p.x, p.y);
+    if let Ok(mut t) = cam.single_mut() {
+        *t = Transform::from_translation(eye).looking_at(target, Vec3::Y);
     }
 }
 
-/// Angled follow-camera fixed in orientation (it does not rotate with the
-/// player — only its position tracks). Mounted above and toward +Z so the
-/// player reads as roughly centered with `−Z` ("north") going up-screen,
-/// matching WASD's `W → −dy` intuition.
-fn build_camera(p: &Player) -> Camera3D {
-    let center = vec3(p.x, 0.0, p.y);
-    let eye = center + vec3(0.0, CAMERA_HEIGHT, CAMERA_BACK);
-    Camera3D {
-        position: eye,
-        target: center,
-        up: vec3(0.0, 1.0, 0.0),
-        ..Default::default()
-    }
+/// Eye + look-at target for the angled follow-cam given a player tile position.
+/// Eye = `(px, HEIGHT, py + BACK)`, target = `(px, 0, py)`, up = Y.
+fn camera_pose(px: f32, py: f32) -> (Vec3, Vec3) {
+    let target = Vec3::new(px, 0.0, py);
+    let eye = target + Vec3::new(0.0, CAMERA_HEIGHT, CAMERA_BACK);
+    (eye, target)
 }
 
-/// Cast a ray from the camera through the mouse cursor and intersect the
-/// ground plane (`Y = 0`). Returns the world-space hit point, or `None` if
-/// the ray is parallel to / pointing away from the ground (degenerate; the
-/// angled cam makes it practically impossible, but guard anyway).
-fn ground_hit(cam: &Camera3D) -> Option<Vec3> {
-    let (mx, my) = mouse_position();
-    let (sw, sh) = (screen_width(), screen_height());
-
-    // Pixel → normalized device coords (Y flipped: screen Y grows downward).
-    let ndc_x = (mx / sw) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (my / sh) * 2.0;
-
-    // Camera basis.
-    let forward = (cam.target - cam.position).normalize();
-    let right = forward.cross(cam.up).normalize();
-    let up = right.cross(forward);
-
-    // Pinhole reconstruction: at unit distance the image half-height is
-    // tan(fovy/2), half-width that × aspect.
-    let tan_half = (cam.fovy * 0.5).tan();
-    let aspect = sw / sh;
-    let dir =
-        (forward + right * (ndc_x * tan_half * aspect) + up * (ndc_y * tan_half)).normalize();
-
-    if dir.y.abs() < 1e-6 {
-        return None;
+/// Transitional sanity check: log the enemy count roughly once a second so we
+/// can confirm the world is ticking before any geometry is drawn (Phase 3).
+fn report_sim(sim: Res<Sim>, time: Res<Time>, mut acc: Local<f32>) {
+    *acc += time.delta_secs();
+    if *acc >= 1.0 {
+        *acc = 0.0;
+        println!(
+            "sim tick — enemies: {}, projectiles: {}, player_life: {:.0}",
+            sim.0.enemies.len(),
+            sim.0.projectiles.len(),
+            sim.0.player.current_life,
+        );
     }
-    let t = -cam.position.y / dir.y;
-    if t <= 0.0 {
-        return None;
-    }
-    Some(cam.position + dir * t)
 }
