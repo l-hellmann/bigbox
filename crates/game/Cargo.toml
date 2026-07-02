@@ -38,3 +38,7 @@ debug = ["dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]
 # Dev-only: dynamic-link Bevy for much faster incremental link times. Never
 # enable for a release/distribution build. Use: `cargo run --features fast-dev`.
 fast-dev = ["bevy/dynamic_linking"]
+# Dev-only: `BB_SHOT=<path>` captures one screenshot of the primary window after
+# the scene populates, then exits. For headless render validation (CI, agents).
+# `png` is already in the workspace bevy features, so this pulls no new deps.
+screenshot = []

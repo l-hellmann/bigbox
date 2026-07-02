@@ -228,8 +228,8 @@ struct SimSet;
 fn main() {
     let (level, seed) = resolve_run();
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "bigbox".into(),
                 resolution: (1280, 720).into(),
@@ -242,6 +242,7 @@ fn main() {
         .insert_resource(RunConfig { level, seed })
         .insert_resource(Paused(false))
         .init_resource::<Aim>()
+        .init_resource::<scene::ProjectilePool>()
         // World + camera exist first, then render assets, then the static map
         // geometry (which reads both).
         .add_systems(
@@ -252,11 +253,24 @@ fn main() {
         // Input feeds the command stream, then the world ticks — ordered.
         .add_systems(Update, (player_input, tick_world).chain().in_set(SimSet))
         // Renderer reads post-tick state: reconcile entities + follow the cam.
+        // Enemies + projectiles are pooled; the rest reconcile naively.
         .add_systems(
             Update,
-            (camera_follow, scene::sync_dynamic, scene::draw_aim).after(SimSet),
-        )
-        .run();
+            (
+                camera_follow,
+                scene::sync_enemies,
+                scene::sync_projectiles,
+                scene::sync_misc,
+                scene::draw_aim,
+            )
+                .after(SimSet),
+        );
+
+    // Dev-only headless render validation: capture a screenshot then exit.
+    #[cfg(feature = "screenshot")]
+    app.add_systems(Update, screenshot_once);
+
+    app.run();
 }
 
 /// Startup: load content, build the world, spawn the follow-camera over the
@@ -364,6 +378,32 @@ fn camera_follow(sim: Res<Sim>, mut cam: Query<&mut Transform, With<FollowCam>>)
     let (eye, target) = camera_pose(p.x, p.y);
     if let Ok(mut t) = cam.single_mut() {
         *t = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+    }
+}
+
+/// Dev-only (`screenshot` feature): once `BB_SHOT` is set, wait for the scene to
+/// populate then save one screenshot of the primary window and exit. Headless
+/// render validation for CI / agents. The capture frame defaults to 120 (gives
+/// the sim time to spawn a wave and the renderer time to reconcile) and can be
+/// overridden with `BB_SHOT_FRAME` — e.g. a later frame to let a swarm converge.
+#[cfg(feature = "screenshot")]
+fn screenshot_once(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+    let Ok(path) = std::env::var("BB_SHOT") else {
+        return;
+    };
+    let at = std::env::var("BB_SHOT_FRAME")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    *frame += 1;
+    if *frame == at {
+        use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+    }
+    if *frame >= at + 20 {
+        exit.write(AppExit::Success);
     }
 }
 

@@ -16,11 +16,11 @@
 
 use crate::{GameContent, Sim};
 use bb_core::Rarity;
-use bb_game::{Content, EnemyInstance, Explosion, LootDrop, Projectile};
+use bb_game::{EnemyInstance, Explosion, LootDrop};
 use bb_procgen::{Map, Tile};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageSampler};
-use bevy::platform::collections::HashMap;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
@@ -103,10 +103,35 @@ impl Painter<'_> {
 #[derive(Component)]
 pub struct MapGeometry;
 
-/// A per-frame-reconciled entity (enemy / player / projectile / drop /
-/// explosion). Cleared and respawned each frame in the naive sync pass.
+/// The few, cheap per-frame-reconciled entities (player figure, drops,
+/// explosions, health bars). Cleared and respawned each frame — negligible
+/// churn. The swarm-heavy entities (enemies, projectiles) are **pooled**
+/// instead (see [`EnemyView`] / [`ProjectilePool`]) per the CLAUDE.md hot-path
+/// rule, so they are *not* tagged with this.
 #[derive(Component)]
 pub struct DynamicEntity;
+
+/// Marks a pooled enemy figure's parent, keyed by the stable `EnemyInstance.id`
+/// so the figure (parent + child cubes) persists across frames — only its
+/// `Transform` and limb swing update, no per-frame spawn/despawn.
+#[derive(Component)]
+pub struct EnemyView(u64);
+
+/// A swinging limb (leg/arm) of a box figure. `amp_z` is the signed fore/aft
+/// amplitude; the walk-bob sets local `translation.z = amp_z * sin(phase)`.
+#[derive(Component)]
+pub struct Limb {
+    amp_z: f32,
+}
+
+/// A pooled projectile cube. Reused by index across frames.
+#[derive(Component)]
+pub struct ProjectileMarker;
+
+/// Entity pool for projectile cubes — grown/shrunk only when the projectile
+/// count changes, positions updated in place otherwise.
+#[derive(Resource, Default)]
+pub struct ProjectilePool(Vec<Entity>);
 
 // ---- Startup: assets -----------------------------------------------------
 
@@ -301,10 +326,131 @@ fn spawn_rubble(
 
 // ---- Per-frame: dynamic entities ----------------------------------------
 
-/// Naive reconcile: clear last frame's dynamic entities and respawn from
-/// `World`. Runs after the tick + camera-follow so it reads post-tick state.
-/// (Phase 3.2b replaces this with keyed pooling for the swarm.)
-pub fn sync_dynamic(
+/// Pooled reconcile for the **swarm** — enemy box figures keyed by stable id.
+/// Figures persist across frames; only `Transform` (position + yaw) and the
+/// limb walk-swing update. New ids spawn a figure; departed ids despawn theirs.
+/// Runs after the tick + camera-follow so it reads post-tick state.
+pub fn sync_enemies(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    content: Res<GameContent>,
+    assets: Res<RenderAssets>,
+    mut cache: ResMut<MatCache>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut parents: Query<(Entity, &EnemyView, &mut Transform, &Children)>,
+    mut limbs: Query<(&mut Transform, &Limb), Without<EnemyView>>,
+) {
+    let world = &sim.0;
+    let live: HashMap<u64, &EnemyInstance> = world.enemies.iter().map(|e| (e.id, e)).collect();
+
+    // Update surviving figures in place; despawn those whose enemy is gone.
+    let mut seen: HashSet<u64> = HashSet::default();
+    for (ent, view, mut tf, children) in &mut parents {
+        let Some(e) = live.get(&view.0) else {
+            commands.entity(ent).despawn();
+            continue;
+        };
+        seen.insert(view.0);
+        *tf = Transform::from_xyz(e.x, 0.0, e.y).with_rotation(Quat::from_rotation_y(e.facing));
+        let swing = ((e.x + e.y) * WALK_FREQ).sin();
+        for &c in children {
+            if let Ok((mut ct, limb)) = limbs.get_mut(c) {
+                ct.translation.z = limb.amp_z * swing;
+            }
+        }
+    }
+
+    // Spawn figures for enemies that don't have one yet.
+    let mut painter = Painter {
+        cache: &mut cache,
+        materials: &mut materials,
+    };
+    for e in &world.enemies {
+        if seen.contains(&e.id) {
+            continue;
+        }
+        let id = content
+            .0
+            .enemies
+            .get(e.archetype)
+            .map(|a| a.id.as_str())
+            .unwrap_or("");
+        let (color, scale, width) = enemy_shape(id);
+        let spec = FigureSpec {
+            scale,
+            width,
+            body: color,
+            head: lighten(color, 0.12),
+            accent: Color::srgb(0.90, 0.96, 0.45),
+            phase: (e.x + e.y) * WALK_FREQ,
+            gun: false,
+        };
+        let ent = spawn_figure(
+            &mut commands,
+            &assets,
+            &mut painter,
+            Vec3::new(e.x, 0.0, e.y),
+            e.facing,
+            &spec,
+        );
+        commands.entity(ent).insert(EnemyView(e.id));
+    }
+}
+
+/// Pooled reconcile for projectiles (swarm-heavy). Reuses a `Vec<Entity>` by
+/// index — grown/shrunk only on count change, positions + material (normal vs
+/// rocket) updated in place. No stable id needed: the visual is positional.
+pub fn sync_projectiles(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    assets: Res<RenderAssets>,
+    mut cache: ResMut<MatCache>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut pool: ResMut<ProjectilePool>,
+    mut q: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), With<ProjectileMarker>>,
+) {
+    let world = &sim.0;
+    let mut painter = Painter {
+        cache: &mut cache,
+        materials: &mut materials,
+    };
+    for (i, p) in world.projectiles.iter().enumerate() {
+        let (size, color) = if p.aoe_radius > 0.0 {
+            (0.38, Color::srgb(1.0, 0.5, 0.2)) // rocket: chunkier, hotter
+        } else {
+            (0.22, Color::srgb(1.0, 0.9, 0.4))
+        };
+        let mat = painter.mat(color);
+        let transform = Transform::from_xyz(p.x, 0.5, p.y).with_scale(Vec3::splat(size));
+        if i < pool.0.len() {
+            // Pre-existing (spawned a prior frame) — update in place.
+            if let Ok((mut tf, mut mm)) = q.get_mut(pool.0[i]) {
+                *tf = transform;
+                mm.0 = mat;
+            }
+        } else {
+            let ent = commands
+                .spawn((
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(mat),
+                    transform,
+                    ProjectileMarker,
+                ))
+                .id();
+            pool.0.push(ent);
+        }
+    }
+    // Retire surplus pool entities when the projectile count drops.
+    while pool.0.len() > world.projectiles.len() {
+        let ent = pool.0.pop().expect("len checked > 0");
+        commands.entity(ent).despawn();
+    }
+}
+
+/// Naive reconcile for the few, cheap dynamics: the player figure, drops,
+/// explosions, and enemy health bars. Despawn-all + respawn — negligible churn
+/// (one player, a handful of drops/explosions, bars only for damaged enemies).
+pub fn sync_misc(
     mut commands: Commands,
     sim: Res<Sim>,
     content: Res<GameContent>,
@@ -329,9 +475,16 @@ pub fn sync_dynamic(
         spawn_drop(&mut commands, &assets, &mut painter, d);
     }
 
-    // Enemies: per-archetype box figures + world-aligned health bars.
+    // Enemy health bars (world-aligned, only for damaged enemies).
     for e in &world.enemies {
-        spawn_enemy(&mut commands, &assets, &mut painter, e, &content.0);
+        let id = content
+            .0
+            .enemies
+            .get(e.archetype)
+            .map(|a| a.id.as_str())
+            .unwrap_or("");
+        let (_, scale, _) = enemy_shape(id);
+        spawn_health_bar(&mut commands, &assets, &mut painter, e, scale);
     }
 
     // Player: green box figure with a gun, facing the aim direction.
@@ -344,7 +497,7 @@ pub fn sync_dynamic(
         phase: (world.player.x + world.player.y) * WALK_FREQ,
         gun: true,
     };
-    spawn_figure(
+    let player = spawn_figure(
         &mut commands,
         &assets,
         &mut painter,
@@ -352,11 +505,7 @@ pub fn sync_dynamic(
         aim.yaw,
         &spec,
     );
-
-    // Projectiles.
-    for p in &world.projectiles {
-        spawn_projectile(&mut commands, &assets, &mut painter, p);
-    }
+    commands.entity(player).insert(DynamicEntity);
 
     // Explosions (expanding, fading blast spheres).
     for e in &world.explosions {
@@ -381,32 +530,6 @@ pub fn draw_aim(sim: Res<Sim>, aim: Res<crate::Aim>, mut gizmos: Gizmos) {
     );
 }
 
-fn spawn_enemy(
-    commands: &mut Commands,
-    assets: &RenderAssets,
-    painter: &mut Painter,
-    e: &EnemyInstance,
-    content: &Content,
-) {
-    let id = content
-        .enemies
-        .get(e.archetype)
-        .map(|a| a.id.as_str())
-        .unwrap_or("");
-    let (color, scale, width) = enemy_shape(id);
-    let spec = FigureSpec {
-        scale,
-        width,
-        body: color,
-        head: lighten(color, 0.12),
-        accent: Color::srgb(0.90, 0.96, 0.45), // sickly zombie eyes
-        phase: (e.x + e.y) * WALK_FREQ,
-        gun: false,
-    };
-    spawn_figure(commands, assets, painter, Vec3::new(e.x, 0.0, e.y), e.facing, &spec);
-    spawn_health_bar(commands, assets, painter, e, scale);
-}
-
 /// A boxy humanoid built from stacked cube parts. `ground` = feet position,
 /// `yaw` faces the heading (front = local +Z). Parent carries the yaw; children
 /// are local-space so world-aligned overlays (health bars) stay outside it.
@@ -420,6 +543,11 @@ struct FigureSpec {
     gun: bool,
 }
 
+/// Spawn a box figure and return its parent entity (caller tags it — `EnemyView`
+/// for pooled enemies, `DynamicEntity` for the naive player). Legs/arms carry a
+/// [`Limb`] so a pooled figure can walk-bob without respawning; the initial
+/// swing is baked from `f.phase` for figures that never animate (the player,
+/// which respawns each frame anyway).
 fn spawn_figure(
     commands: &mut Commands,
     assets: &RenderAssets,
@@ -427,7 +555,7 @@ fn spawn_figure(
     ground: Vec3,
     yaw: f32,
     f: &FigureSpec,
-) {
+) -> Entity {
     let s = f.scale;
     let w = f.width;
     let swing = f.phase.sin();
@@ -440,7 +568,6 @@ fn spawn_figure(
     // Precompute part transforms (local space, relative to feet at y=0).
     let leg = Vec3::new(0.42 * s, 0.75 * s, 0.5 * s);
     let leg_y = 0.375 * s;
-    let leg_dz = swing * 0.18 * s;
     let torso = Vec3::new(1.0 * s * w, 0.9 * s, 0.62 * s);
     let torso_y = 0.75 * s + 0.45 * s;
     let arm = Vec3::new(0.28 * s, 0.82 * s, 0.4 * s);
@@ -449,12 +576,13 @@ fn spawn_figure(
     let head_y = 0.75 * s + 0.9 * s + 0.3 * s;
     let eye = Vec3::new(0.14 * s, 0.14 * s, 0.06 * s);
     let eye_z = 0.31 * s + 0.02;
+    let leg_amp = 0.18 * s;
+    let arm_amp = 0.2 * s;
 
     commands
         .spawn((
             Transform::from_translation(ground).with_rotation(Quat::from_rotation_y(yaw)),
             Visibility::default(),
-            DynamicEntity,
         ))
         .with_children(|p| {
             let mut cuboid = |t: Vec3, size: Vec3, mat: &Handle<StandardMaterial>| {
@@ -464,18 +592,12 @@ fn spawn_figure(
                     Transform::from_translation(t).with_scale(size),
                 ));
             };
-            // Legs (antiphase fore/aft shuffle).
-            cuboid(Vec3::new(-0.30 * s, leg_y, leg_dz), leg, &body);
-            cuboid(Vec3::new(0.30 * s, leg_y, -leg_dz), leg, &body);
-            // Torso.
-            cuboid(Vec3::new(0.0, torso_y, 0.0), torso, &body);
-            // Arms (swing opposite the legs).
-            cuboid(Vec3::new(-arm_x, torso_y - 0.02 * s, -swing * 0.2 * s), arm, &body);
-            cuboid(Vec3::new(arm_x, torso_y - 0.02 * s, swing * 0.2 * s), arm, &body);
             // Head + eyes (accent on the +Z front, showing the heading).
             cuboid(Vec3::new(0.0, head_y, 0.0), head_sz, &head);
             cuboid(Vec3::new(-0.16 * s, head_y + 0.06 * s, eye_z), eye, &accent);
             cuboid(Vec3::new(0.16 * s, head_y + 0.06 * s, eye_z), eye, &accent);
+            // Torso.
+            cuboid(Vec3::new(0.0, torso_y, 0.0), torso, &body);
             // Gun: a dark barrel jutting forward from the right hand.
             if f.gun {
                 cuboid(
@@ -484,7 +606,22 @@ fn spawn_figure(
                     &gun_mat,
                 );
             }
-        });
+            // Legs + arms carry a Limb so the walk-bob can animate them in place.
+            // Legs shuffle fore/aft in antiphase; arms swing opposite the legs.
+            let mut limb = |t: Vec3, size: Vec3, amp_z: f32| {
+                p.spawn((
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(body.clone()),
+                    Transform::from_translation(t).with_scale(size),
+                    Limb { amp_z },
+                ));
+            };
+            limb(Vec3::new(-0.30 * s, leg_y, leg_amp * swing), leg, leg_amp);
+            limb(Vec3::new(0.30 * s, leg_y, -leg_amp * swing), leg, -leg_amp);
+            limb(Vec3::new(-arm_x, torso_y - 0.02 * s, -arm_amp * swing), arm, -arm_amp);
+            limb(Vec3::new(arm_x, torso_y - 0.02 * s, arm_amp * swing), arm, arm_amp);
+        })
+        .id()
 }
 
 /// World-aligned health bar above a damaged enemy (dark backing + green→red
@@ -541,26 +678,6 @@ fn spawn_drop(commands: &mut Commands, assets: &RenderAssets, painter: &mut Pain
         Mesh3d(assets.cube.clone()),
         MeshMaterial3d(mat),
         Transform::from_xyz(d.x, beam_top * 0.5, d.y).with_scale(Vec3::new(0.05, beam_top, 0.05)),
-        DynamicEntity,
-    ));
-}
-
-fn spawn_projectile(
-    commands: &mut Commands,
-    assets: &RenderAssets,
-    painter: &mut Painter,
-    p: &Projectile,
-) {
-    let (size, color) = if p.aoe_radius > 0.0 {
-        (0.38, Color::srgb(1.0, 0.5, 0.2)) // rocket: chunkier, hotter
-    } else {
-        (0.22, Color::srgb(1.0, 0.9, 0.4))
-    };
-    let mat = painter.mat(color);
-    commands.spawn((
-        Mesh3d(assets.cube.clone()),
-        MeshMaterial3d(mat),
-        Transform::from_xyz(p.x, 0.5, p.y).with_scale(Vec3::splat(size)),
         DynamicEntity,
     ));
 }
