@@ -44,6 +44,10 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_text",
     "default_font",
     "bevy_gizmos",
+    # Like bevy_ui/bevy_ui_render, gizmo *rendering* is a separate feature —
+    # without it `Gizmos` buffers accumulate but nothing draws (the aim line +
+    # flow-field viz were invisible until this was added).
+    "bevy_gizmos_render",
     "bevy_gilrs",
     "png",
     "x11",
