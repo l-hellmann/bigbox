@@ -260,23 +260,18 @@ pub enum FireProfile {
     Explosive { radius: f32, speed_factor: f32 },
 }
 
-/// A transient blast marker for rendering a rocket detonation — position, the
-/// radius it covered, and a countdown. Ephemeral / client-side effect state
-/// (CLAUDE.md netcode posture): never replicated, replayed from the impact, so
-/// it sits alongside projectiles rather than in the persistent world tables.
+/// A one-shot "a rocket detonated here" signal — position + the radius it
+/// covered. Emit-only: the sim pushes one on impact and never touches it again;
+/// the render layer drains these each frame and owns the *visual* and its clock
+/// (the fading blast sphere lives entirely render-side — see `scene.rs`). This
+/// is the CLAUDE.md netcode posture made literal: ephemeral effect state is not
+/// replicated and carries no lifetime the sim has to tick.
 #[derive(Debug, Clone, Copy)]
-pub struct Explosion {
+pub struct ExplosionEvent {
     pub x: f32,
     pub y: f32,
     pub radius: f32,
-    /// Seconds left before the effect is culled.
-    pub ttl: f32,
-    /// Original lifetime, so the renderer can compute a 0..1 fade.
-    pub max_ttl: f32,
 }
-
-/// How long a rocket's blast ring stays on screen (seconds). Cosmetic only.
-pub const EXPLOSION_TTL: f32 = 0.35;
 
 /// The player's active weapon: the owned [`ItemInstance`] plus the combat
 /// [`Weapon`] it aggregates to, cached so the fire path never re-aggregates per
@@ -349,9 +344,10 @@ pub struct World {
     pub map: Map,
     pub player: Player,
     pub projectiles: Vec<Projectile>,
-    /// Transient rocket-blast markers for rendering. Ephemeral effect state, not
-    /// part of the persistent world (see [`Explosion`]); ticked down and culled.
-    pub explosions: Vec<Explosion>,
+    /// This frame's rocket-detonation signals, drained by the render layer.
+    /// Emit-only ephemeral effect state (see [`ExplosionEvent`]); the sim pushes
+    /// and never ages them — the renderer owns the blast visual and its clock.
+    pub explosion_events: Vec<ExplosionEvent>,
     pub enemies: Vec<EnemyInstance>,
     pub drops: Vec<LootDrop>,
     /// Items the player has walked over and picked up. No equip/stash UI yet —
@@ -423,7 +419,7 @@ impl World {
                 current_life: PLAYER_MAX_LIFE,
             },
             projectiles: Vec::new(),
-            explosions: Vec::new(),
+            explosion_events: Vec::new(),
             enemies: Vec::new(),
             drops: Vec::new(),
             inventory: Vec::new(),
@@ -786,7 +782,6 @@ impl World {
         self.integrate_movement(dt);
         self.update_flow();
         self.resolve_projectiles(dt, content);
-        self.update_explosions(dt);
         self.move_enemies(dt);
         self.apply_contact_damage(dt);
         self.collect_pickups(content);
@@ -907,9 +902,9 @@ impl World {
 
     /// Detonate an explosive shot at `(x, y)`: deal its full damage to every
     /// enemy within `aoe_radius`, waking each and killing those that drop, then
-    /// drop a transient [`Explosion`] marker for the renderer. Each enemy rolls
-    /// its own hit (independent dodge/crit). `swap_remove` on a kill backfills
-    /// the slot, so a killed index is re-checked rather than skipped.
+    /// emit an [`ExplosionEvent`] for the renderer. Each enemy rolls its own hit
+    /// (independent dodge/crit). `swap_remove` on a kill backfills the slot, so a
+    /// killed index is re-checked rather than skipped.
     fn resolve_explosion(&mut self, x: f32, y: f32, p: &Projectile, content: &Content) {
         let weapon = projectile_weapon(p);
         let r2 = p.aoe_radius * p.aoe_radius;
@@ -928,21 +923,11 @@ impl World {
             }
             i += 1;
         }
-        self.explosions.push(Explosion {
+        self.explosion_events.push(ExplosionEvent {
             x,
             y,
             radius: p.aoe_radius,
-            ttl: EXPLOSION_TTL,
-            max_ttl: EXPLOSION_TTL,
         });
-    }
-
-    /// Age out transient explosion markers. Pure cosmetic bookkeeping.
-    fn update_explosions(&mut self, dt: f32) {
-        for e in &mut self.explosions {
-            e.ttl -= dt;
-        }
-        self.explosions.retain(|e| e.ttl > 0.0);
     }
 
     /// Index of the first enemy whose center is within `PROJECTILE_HIT_RADIUS`
@@ -2629,7 +2614,7 @@ mod tests {
             w.enemies.iter().all(|e| e.combatant.current_life < 1000.0),
             "both enemies should be caught in one blast"
         );
-        assert!(!w.explosions.is_empty(), "a blast marker should spawn");
+        assert!(!w.explosion_events.is_empty(), "a blast event should emit");
     }
 
     #[test]
@@ -2645,21 +2630,7 @@ mod tests {
             }
         }
         assert!(w.projectiles.is_empty(), "rocket consumed on the wall");
-        assert!(!w.explosions.is_empty(), "wall impact still detonates");
-    }
-
-    #[test]
-    fn explosion_markers_age_out() {
-        let mut w = World::new(single_floor_map());
-        w.explosions.push(Explosion {
-            x: 1.5,
-            y: 1.5,
-            radius: 1.5,
-            ttl: EXPLOSION_TTL,
-            max_ttl: EXPLOSION_TTL,
-        });
-        w.tick(EXPLOSION_TTL + 0.05, &Content::empty());
-        assert!(w.explosions.is_empty(), "expired blast markers are culled");
+        assert!(!w.explosion_events.is_empty(), "wall impact still detonates");
     }
 
     #[test]

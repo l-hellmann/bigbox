@@ -37,6 +37,10 @@ const CAMERA_HEIGHT: f32 = 15.0;
 /// Camera offset toward +Z (screen-down / "south") from the player. The cam
 /// looks down-and-forward at the player from here.
 const CAMERA_BACK: f32 = 10.0;
+/// Follow-cam smoothing rate (per second). Higher = snappier; the eye eases
+/// toward its target pose with a frame-rate-independent exponential lerp so
+/// fast strafes don't jerk the view. The look direction stays fixed.
+const CAMERA_SMOOTH: f32 = 12.0;
 
 /// Map seed from `BB_SEED`, if set and parseable.
 fn map_seed_env() -> Option<u64> {
@@ -252,14 +256,19 @@ fn main() {
         // Input feeds the command stream, then the world ticks — ordered.
         .add_systems(Update, (player_input, tick_world).chain().in_set(SimSet))
         // Renderer reads post-tick state: reconcile entities + follow the cam.
-        // Enemies + projectiles are pooled; the rest reconcile naively.
+        // Enemies, the player, projectiles, health bars, and explosions are
+        // pooled/persistent; only loot drops still reconcile naively.
         .add_systems(
             Update,
             (
                 camera_follow,
                 scene::sync_enemies,
+                scene::sync_player,
+                scene::sync_health_bars,
                 scene::sync_projectiles,
                 scene::sync_misc,
+                scene::spawn_explosions,
+                scene::animate_explosions,
                 scene::draw_aim,
                 hud::hud_update,
                 hud::inventory_hover,
@@ -439,12 +448,18 @@ fn tick_world(mut sim: ResMut<Sim>, content: Res<GameContent>, time: Res<Time>) 
 
 /// Re-target the follow-cam from the *post-tick* player position (ordered after
 /// `SimSet`) so the world doesn't lag the player by one frame. Orientation is
-/// fixed; only translation tracks — matching the old macroquad behaviour.
-fn camera_follow(sim: Res<Sim>, mut cam: Query<&mut Transform, With<FollowCam>>) {
+/// fixed; only translation tracks, easing toward the target eye with a
+/// frame-rate-independent exponential lerp so quick strafes don't jerk the view.
+fn camera_follow(sim: Res<Sim>, time: Res<Time>, mut cam: Query<&mut Transform, With<FollowCam>>) {
     let p = &sim.0.player;
     let (eye, target) = camera_pose(p.x, p.y);
+    // Constant camera→target offset — look direction is preserved by looking at
+    // the smoothed eye minus this offset.
+    let offset = eye - target;
     if let Ok(mut t) = cam.single_mut() {
-        *t = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+        let k = 1.0 - (-CAMERA_SMOOTH * time.delta_secs()).exp();
+        let smoothed = t.translation.lerp(eye, k);
+        *t = Transform::from_translation(smoothed).looking_at(smoothed - offset, Vec3::Y);
     }
 }
 
