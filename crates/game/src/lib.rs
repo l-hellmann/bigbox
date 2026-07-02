@@ -1,6 +1,6 @@
 //! Game-state primitives for the runtime layer. **No rendering or input
-//! plumbing in here** — that lives in `main.rs` next door, behind macroquad.
-//! Keeping the state/logic side library-shaped means:
+//! plumbing in here** — that lives in the Bevy shell (`main.rs` + `scene`/`hud`/
+//! `input` modules) next door. Keeping the state/logic side library-shaped means:
 //!
 //! 1. It can be unit-tested without spinning up a window.
 //! 2. It can later run server-side inside a SpacetimeDB reducer module

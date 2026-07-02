@@ -19,23 +19,19 @@ bigbox-content = { path = "../content" }
 bigbox-procgen = { path = "../procgen" }
 rand = { workspace = true }
 bevy = { workspace = true }
-# Debug-only: the remaining macroquad code is the inherited egui-macroquad tuning
-# overlay (`debug.rs`), not yet ported to bevy_egui (Phase 5). macroquad is thus
-# a debug-only dep — a default/release build links none of it.
-macroquad = { workspace = true, optional = true }
-# Debug-only immediate-mode tuning panel + RON tunable export/import. All
-# optional so release builds don't compile (or ship) any of it. Enable with
-# `--features debug`.
-egui-macroquad = { version = "0.17", optional = true }
+# Debug-only immediate-mode tuning panel (bevy_egui host) + RON tunable
+# export/import + clap CLI. All optional so a release build compiles (and ships)
+# none of it. Enable with `--features debug`.
+bevy_egui = { version = "0.41", optional = true }
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 
 [features]
-# Compiles the local-dev tooling: the in-game tuning overlay (egui +
-# macroquad host), tunable RON export/import, and clap CLI arg parsing. Off by
-# default → none of it (nor macroquad/egui/serde/ron/clap) lands in a release build.
-debug = ["dep:macroquad", "dep:egui-macroquad", "dep:serde", "dep:ron", "dep:clap"]
+# Compiles the local-dev tooling: the in-game tuning overlay (bevy_egui),
+# tunable RON export/import, and clap CLI arg parsing. Off by default → none of
+# it (nor bevy_egui/serde/ron/clap) lands in a release build.
+debug = ["dep:bevy_egui", "dep:serde", "dep:ron", "dep:clap"]
 # Dev-only: dynamic-link Bevy for much faster incremental link times. Never
 # enable for a release/distribution build. Use: `cargo run --features fast-dev`.
 fast-dev = ["bevy/dynamic_linking"]

@@ -62,31 +62,3 @@ pub fn read_pad(gamepads: &Query<&Gamepad>, deadzone: f32) -> PadInput {
     }
 }
 
-/// Diagnostic snapshot of one connected gamepad, for the debug overlay's
-/// controller panel. Kept as a type so the (still-macroquad) debug panel keeps
-/// compiling; its bevy_gilrs-based *construction* is reworked in Phase 5 — the
-/// raw-`gilrs` introspection (SDL GUID / mapping / pre-mapping axis codes) it
-/// used to carry has no direct `bevy_gilrs` equivalent.
-#[cfg(feature = "debug")]
-#[allow(dead_code)]
-pub struct PadInfo {
-    pub name: String,
-    pub uuid: String,
-    pub mapping: String,
-    pub power: String,
-    pub left_stick: (f32, f32),
-    pub right_stick: (f32, f32),
-    pub right_trigger: f32,
-    pub buttons_down: Vec<&'static str>,
-    pub raw_axes: Vec<(String, f32)>,
-    pub raw_buttons: Vec<String>,
-}
-
-/// Gamepad status + the list of connected pads, for the debug overlay. See
-/// [`PadInfo`] — reconstruction lands in Phase 5.
-#[cfg(feature = "debug")]
-#[allow(dead_code)]
-pub struct PadDiag {
-    pub initialized: bool,
-    pub pads: Vec<PadInfo>,
-}

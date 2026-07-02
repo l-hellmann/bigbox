@@ -1,12 +1,9 @@
-//! Bevy shell: window, resources, world tick, follow-camera. The state
-//! mutations all live in `bb_game::World`; this file is the runtime adapter.
-//!
-//! Migration status (macroquad → Bevy): this is **Phase 1** — window + camera +
-//! the world-tick loop. Input (Phase 2), 3D rendering (Phase 3), HUD/inventory
-//! (Phase 4) and the debug overlay (Phase 5) still live in the inherited
-//! macroquad modules below and are ported in later phases. Until Phase 3 lands
-//! nothing is drawn to screen — the world ticks headless behind the camera.
-//! See `.attic/migration/plan.md`.
+//! Bevy shell: window, resources, world tick, follow-camera, and system wiring.
+//! The state mutations all live in `bb_game::World`; this file is the runtime
+//! adapter. The macroquad → Bevy migration is complete: `scene` (3D), `hud`
+//! (bevy_ui), `input`/`pad` (bevy_input/bevy_gilrs), and `debug` (bevy_egui,
+//! `--features debug`) replace the old macroquad layers. See
+//! `.attic/migration/plan.md`.
 //!
 //! Rendering is **boxy 3D** (BoxHead-style): the world is a 2D plane in
 //! gameplay terms, drawn in 3D space with extruded-cube walls and an angled
@@ -18,30 +15,20 @@
 //! Content (enemy roster, base items, affixes) is embedded at build time via
 //! `include_str!`, so a shipped native binary is self-contained.
 
-use bb_game::{Content, World};
+use bb_game::{Command, Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-// Inherited macroquad modules — not yet wired into the Bevy app. They stay
-// compiled (so they don't bitrot) until their porting phase; `allow(dead_code)`
-// silences the transitional "unused" noise. Removed file-by-file as each phase
-// rebuilds it as Bevy systems.
+// Debug tuning overlay (bevy_egui) — dev-only, behind `--features debug`.
 #[cfg(feature = "debug")]
-#[allow(dead_code)]
 mod debug;
 mod hud;
 mod input;
 mod pad;
 mod scene;
-
-// Re-export the gamepad diagnostic type so `crate::PadDiag` (used by the debug
-// overlay) keeps resolving from the crate root.
-#[cfg(feature = "debug")]
-#[allow(unused_imports)]
-pub use pad::PadDiag;
 
 /// Camera offset above the player, in world units. With `CAMERA_BACK` this
 /// sets the tilt: atan(HEIGHT / BACK) ≈ 56° — the classic BoxHead overhead
@@ -201,6 +188,12 @@ struct RunConfig {
 #[derive(Resource)]
 struct Paused(bool);
 
+/// Set true while the debug egui panel wants the pointer, so a click on the
+/// panel doesn't shoot / switch weapons through to the game. Always present
+/// (defaults false); only the `debug` feature ever sets it.
+#[derive(Resource, Default)]
+struct BlockFire(bool);
+
 /// This frame's resolved aim, shared from `player_input` to the renderer. `yaw`
 /// faces the player figure at the cursor/stick; `hit` is the ground point the
 /// aim line/crosshair marks. `yaw` holds its last value when aim is momentarily
@@ -237,6 +230,7 @@ fn main() {
         .insert_resource(RunConfig { level, seed })
         .insert_resource(Paused(false))
         .init_resource::<Aim>()
+        .init_resource::<BlockFire>()
         .init_resource::<scene::ProjectilePool>()
         .init_resource::<hud::InventoryOpen>()
         // World + camera exist first, then render assets, then the static map
@@ -272,6 +266,24 @@ fn main() {
             )
                 .after(SimSet),
         );
+
+    // Debug tuning overlay (bevy_egui) + 3D debug viz. Panel/entity-stat systems
+    // run in the egui pass; flow-field gizmos + map-swap respawn in Update.
+    #[cfg(feature = "debug")]
+    {
+        use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+        app.add_plugins(EguiPlugin::default())
+        .init_resource::<debug::DebugUi>()
+        .init_resource::<debug::MapDirty>()
+        .add_systems(
+            EguiPrimaryContextPass,
+            (debug::debug_panel, debug::debug_entity_stats),
+        )
+        .add_systems(
+            Update,
+            (debug::debug_flow_gizmos, scene::reload_map_geometry),
+        );
+    }
 
     // Dev-only headless render validation: capture a screenshot then exit.
     #[cfg(feature = "screenshot")]
@@ -349,6 +361,7 @@ fn ui_input(
 /// before `tick_world` so the tick sees this frame's intent. Runs in `SimSet`,
 /// so the inventory-pause gate suspends input alongside the tick.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn player_input(
     mut sim: ResMut<Sim>,
     mut aim_state: ResMut<input::AimState>,
@@ -357,6 +370,7 @@ fn player_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut wheel: MessageReader<MouseWheel>,
+    block_fire: Res<BlockFire>,
     gamepads: Query<&Gamepad>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<FollowCam>>,
@@ -388,6 +402,16 @@ fn player_input(
     let wheel_y: f32 = wheel.read().map(|e| e.y).sum();
 
     for cmd in input::collect_commands(frame.dir, &pad, &keys, &mouse_buttons, wheel_y) {
+        // Swallow fire / weapon-switch input while the debug panel wants the
+        // pointer (a click on a slider/button shouldn't also shoot or cycle).
+        if block_fire.0
+            && matches!(
+                cmd,
+                Command::Fire { .. } | Command::SwitchWeapon { .. } | Command::CycleWeapon { .. }
+            )
+        {
+            continue;
+        }
         sim.0.apply(cmd, dt);
     }
 }

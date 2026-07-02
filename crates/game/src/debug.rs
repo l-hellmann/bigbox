@@ -4,46 +4,62 @@
 //! `World::debug_*` spawn helpers. Every widget here edits live game state; the
 //! headless `bb_game` library knows nothing about it. Toggle with **F1**.
 //!
+//! Bevy port: the panel body (windows / grids / sliders bound to
+//! `&mut world.tunables`) is unchanged — only the egui *host* moved from
+//! `egui-macroquad` to `bevy_egui`. `DebugUi` is a `Resource`; `debug_panel` is
+//! a system in the `EguiPrimaryContextPass` schedule. The old flow-field and
+//! entity-stat viz (was macroquad immediate draws in `render.rs`) are
+//! re-authored here as Bevy gizmos + an egui overlay.
+//!
 //! Run it with:
 //! ```text
 //! cargo run -p bigbox-game --features debug
 //! ```
 
-use egui_macroquad::egui;
+use crate::{Aim, BlockFire, FollowCam, GameContent, Sim};
 use bb_core::{HitResult, Rarity, Weapon, dps_against, time_to_kill};
 use bb_game::{Content, FireProfile, Tunables, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
-use macroquad::prelude::*;
+use bevy::prelude::*;
+use bevy_egui::{EguiContexts, egui};
 
-/// Where tunables export/import. Lives in the process working directory so the
-/// file sits next to wherever `cargo run` was launched — easy to find, edit by
-/// hand, and check into a presets folder.
+/// Where tunables export/import. Lives in the process working directory.
 const TUNABLES_PATH: &str = "bigbox-tunables.ron";
 
+/// Set when a map-swap button rebuilds the world onto a new map, so
+/// `scene::reload_map_geometry` respawns the static geometry next frame.
+#[derive(Resource, Default)]
+pub struct MapDirty(pub bool);
+
+/// A connected gamepad's live state, distilled from the `bevy_gilrs` `Gamepad`
+/// component for the controller panel. (bevy_gilrs doesn't expose the SDL GUID /
+/// mapping name / raw pre-mapping axis codes the old raw-`gilrs` diag showed, so
+/// those are gone — vendor/product id is the closest identity handle left.)
+pub struct PadView {
+    name: String,
+    vendor: Option<u16>,
+    product: Option<u16>,
+    left_stick: (f32, f32),
+    right_stick: (f32, f32),
+    right_trigger: f32,
+    buttons_down: Vec<&'static str>,
+}
+
+#[derive(Resource)]
 pub struct DebugUi {
     visible: bool,
     archetype: usize,
     spawn_count: i32,
     spawn_distance: u32,
     spawn_at_cursor: bool,
-    /// Selected weapon — index into [`Content::bases`] (weapon-slot only).
     weapon_base: usize,
-    /// Loot drop: `0` = random base, else `1 + index` into [`Content::bases`].
     drop_base: usize,
-    /// Rarity to force on a debug drop.
     drop_rarity: Rarity,
-    /// Item level to roll a debug drop at.
     drop_ilvl: u32,
-    /// Drop at the cursor tile (else on the player, for instant pickup).
     drop_at_cursor: bool,
-    /// Arena pillar geometry for the next "load arena".
     arena_pillars: bool,
-    /// Draw the flow-field next-step arrows (read by the renderer).
     show_flow: bool,
-    /// Draw floating Enemy/Combatant + player stat blocks (read by the renderer).
     show_entity_stats: bool,
-    /// Which tool windows are open. The launcher's checkboxes and each window's
-    /// close [x] both drive these (kept in sync via a local, see [`Self::run`]).
     win_combat: bool,
     win_spawning: bool,
     win_loot: bool,
@@ -52,18 +68,13 @@ pub struct DebugUi {
     win_controller: bool,
     win_actions: bool,
     win_file: bool,
-    /// Last export/import outcome, shown under the buttons.
     status: String,
+    /// Set by a map-swap button; drained by `debug_panel` into `MapDirty`.
+    map_reloaded: bool,
 }
 
 impl Default for DebugUi {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DebugUi {
-    pub fn new() -> Self {
         Self {
             visible: true,
             archetype: 0,
@@ -78,8 +89,6 @@ impl DebugUi {
             arena_pillars: true,
             show_flow: false,
             show_entity_stats: false,
-            // All tool windows start closed; open them on demand from the
-            // launcher checkboxes.
             win_combat: false,
             win_spawning: false,
             win_loot: false,
@@ -89,103 +98,89 @@ impl DebugUi {
             win_actions: false,
             win_file: false,
             status: String::new(),
+            map_reloaded: false,
         }
     }
+}
 
-    /// F1 shows/hides the panel.
-    pub fn handle_toggle(&mut self) {
-        if is_key_pressed(KeyCode::F1) {
-            self.visible = !self.visible;
-        }
+/// The tuning panel — a `bevy_egui` system in the `EguiPrimaryContextPass`
+/// schedule. F1 toggles it; while it wants the pointer it sets `BlockFire` so
+/// clicks on the panel don't shoot/switch through to the game.
+pub fn debug_panel(
+    mut contexts: EguiContexts,
+    mut ui_state: ResMut<DebugUi>,
+    mut sim: ResMut<Sim>,
+    content: Res<GameContent>,
+    aim: Res<Aim>,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut block: ResMut<BlockFire>,
+    mut map_dirty: ResMut<MapDirty>,
+    pads: Query<(&Name, &Gamepad)>,
+) -> Result {
+    if keys.just_pressed(KeyCode::F1) {
+        ui_state.visible = !ui_state.visible;
+    }
+    if !ui_state.visible {
+        block.0 = false;
+        return Ok(());
     }
 
-    /// Whether the renderer should draw the flow-field arrows this frame.
-    pub fn show_flow(&self) -> bool {
-        self.visible && self.show_flow
+    let ctx = contexts.ctx_mut()?;
+    // Forgive cursor jitter between press and release (trackpad / high-DPI) so
+    // egui doesn't reclassify a click as a drag and drop it.
+    ctx.options_mut(|o| o.input_options.max_click_dist = 14.0);
+
+    let content = &content.0;
+    let cursor_tile = aim.hit.map(|h| (h.x, h.z));
+    let fps = 1.0 / time.delta_secs().max(1e-4);
+    let pad_views: Vec<PadView> = pads.iter().map(|(n, g)| PadView::from_gamepad(n, g)).collect();
+
+    let ui_state = &mut *ui_state;
+    let world = &mut sim.0;
+
+    // Launcher: compact always-on window with god mode, tool toggles, footer.
+    egui::Window::new("debug (F1)")
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+        .default_width(220.0)
+        .show(ctx, |ui| ui_state.launcher_body(ui, world, fps));
+
+    ui_state.window(ctx, 0, "Weapon & Combat", DebugUi::win_combat_get, |s, ui| {
+        s.loadout_section(ui, world, content)
+    });
+    ui_state.window(ctx, 1, "Spawning", DebugUi::win_spawning_get, |s, ui| {
+        s.spawning_section(ui, world, content, cursor_tile)
+    });
+    ui_state.window(ctx, 2, "Loot", DebugUi::win_loot_get, |s, ui| {
+        s.loot_section(ui, world, content, cursor_tile)
+    });
+    ui_state.window(ctx, 3, "Movement / pathing", DebugUi::win_movement_get, |_s, ui| {
+        DebugUi::movement_body(ui, world)
+    });
+    ui_state.window(ctx, 4, "Level / viz", DebugUi::win_level_get, |s, ui| {
+        s.level_body(ui, world)
+    });
+    ui_state.window(ctx, 5, "Controller", DebugUi::win_controller_get, |_s, ui| {
+        controller_body(ui, &pad_views)
+    });
+    ui_state.window(ctx, 6, "World actions", DebugUi::win_actions_get, |_s, ui| {
+        DebugUi::actions_body(ui, world)
+    });
+    ui_state.window(ctx, 7, "Tunables file", DebugUi::win_file_get, |s, ui| {
+        s.file_body(ui, world)
+    });
+
+    block.0 = ctx.egui_wants_pointer_input();
+
+    // A map-swap button rebuilt the world; ask the renderer to respawn geometry.
+    if ui_state.map_reloaded {
+        ui_state.map_reloaded = false;
+        map_dirty.0 = true;
     }
+    Ok(())
+}
 
-    /// Whether the renderer should draw floating entity stat blocks this frame.
-    pub fn show_entity_stats(&self) -> bool {
-        self.visible && self.show_entity_stats
-    }
-
-    /// Build and apply the panel for this frame. Returns `true` while egui is
-    /// capturing the pointer, so the caller can suppress firing/aiming clicks
-    /// that land on the panel. `cursor_tile` is the ground position under the
-    /// mouse (tile coords), used by the "spawn at cursor" action.
-    pub fn run(
-        &mut self,
-        world: &mut World,
-        content: &Content,
-        cursor_tile: Option<(f32, f32)>,
-        pad_diag: &crate::PadDiag,
-    ) -> bool {
-        if !self.visible {
-            return false;
-        }
-        // egui-miniquad only propagates the native DPI to egui on a *change*
-        // after startup, not on the first frame — so with `high_dpi` the panel
-        // would render at half size (1.0 pixels-per-point in a 2× framebuffer).
-        // Pin it to the display scale ourselves. `set_pixels_per_point` targets
-        // an absolute value via the zoom factor, so it stays correct even if
-        // egui-miniquad later sets the native scale on a monitor change.
-        let dpi = screen_dpi_scale();
-        egui_macroquad::cfg(|ctx| {
-            ctx.set_pixels_per_point(dpi);
-            // Forgive cursor jitter between press and release: egui otherwise
-            // reclassifies a click that drifts more than `max_click_dist` (6pt
-            // default) as a *drag* and drops it — the main cause of "missed"
-            // clicks on a trackpad / high-DPI display. Widen the tolerance.
-            ctx.options_mut(|o| o.input_options.max_click_dist = 14.0);
-        });
-
-        let mut wants_pointer = false;
-        egui_macroquad::ui(|ctx| {
-            // Launcher: always-on compact window with god mode, the per-tool
-            // open toggles, and the live stats footer.
-            egui::Window::new("debug (F1)")
-                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
-                .default_width(220.0)
-                .show(ctx, |ui| self.launcher_body(ui, world));
-
-            // Tool windows — each renders only when its open bool is set, and its
-            // own close [x] clears that bool. `window()` copies the bool to a
-            // local for `.open()` so we don't borrow `self` twice. The `slot`
-            // index cascades their initial position out from beside the launcher.
-            self.window(ctx, 0, "Weapon & Combat", Self::win_combat_get, |s, ui| {
-                s.loadout_section(ui, world, content)
-            });
-            self.window(ctx, 1, "Spawning", Self::win_spawning_get, |s, ui| {
-                s.spawning_section(ui, world, content, cursor_tile)
-            });
-            self.window(ctx, 2, "Loot", Self::win_loot_get, |s, ui| {
-                s.loot_section(ui, world, content, cursor_tile)
-            });
-            self.window(ctx, 3, "Movement / pathing", Self::win_movement_get, |_s, ui| {
-                Self::movement_body(ui, world)
-            });
-            self.window(ctx, 4, "Level / viz", Self::win_level_get, |s, ui| {
-                s.level_body(ui, world)
-            });
-            self.window(ctx, 5, "Controller", Self::win_controller_get, |_s, ui| {
-                controller_body(ui, pad_diag)
-            });
-            self.window(ctx, 6, "World actions", Self::win_actions_get, |_s, ui| {
-                Self::actions_body(ui, world)
-            });
-            self.window(ctx, 7, "Tunables file", Self::win_file_get, |s, ui| {
-                s.file_body(ui, world)
-            });
-
-            // Read after everything is built so it reflects this frame's
-            // interaction (used to suppress firing through a panel).
-            wants_pointer = ctx.wants_pointer_input();
-        });
-        wants_pointer
-    }
-
-    // Field accessors so `window()` can address an open-bool generically without
-    // a borrow-checker fight (it copies via the getter, writes back via the ptr).
+impl DebugUi {
     fn win_combat_get(&mut self) -> &mut bool { &mut self.win_combat }
     fn win_spawning_get(&mut self) -> &mut bool { &mut self.win_spawning }
     fn win_loot_get(&mut self) -> &mut bool { &mut self.win_loot }
@@ -195,10 +190,9 @@ impl DebugUi {
     fn win_actions_get(&mut self) -> &mut bool { &mut self.win_actions }
     fn win_file_get(&mut self) -> &mut bool { &mut self.win_file }
 
-    /// Render one collapsible/closable tool window. `open` selects the backing
-    /// bool; `body` fills it. The open bool is copied to a local for egui's
-    /// `.open()` (its close [x] toggles the local), then written back — so the
-    /// body closure is free to borrow `self` without aliasing the bool.
+    /// Render one closable tool window. `open` selects the backing bool; `body`
+    /// fills it. The bool is copied to a local for egui's `.open()` (its close
+    /// [x] toggles the local), then written back so `body` can borrow `self`.
     fn window(
         &mut self,
         ctx: &egui::Context,
@@ -209,12 +203,7 @@ impl DebugUi {
     ) {
         let mut is_open = *open(self);
         if is_open {
-            // Cascade the default position out to the *left* of the top-right
-            // launcher so a freshly-opened tool lands near it (title bar
-            // reachable, fully on-screen) instead of egui's centre-stack. Only
-            // applies until the user drags it — egui then remembers the moved
-            // position by id. Width 300; launcher occupies ~220 at the right edge.
-            let sr = ctx.screen_rect();
+            let sr = ctx.content_rect();
             let pos = [
                 sr.right() - 540.0 - slot as f32 * 24.0,
                 sr.top() + 8.0 + slot as f32 * 28.0,
@@ -225,28 +214,13 @@ impl DebugUi {
                 .default_width(300.0)
                 .resizable(true)
                 .show(ctx, |ui| {
-                    // `drag_to_scroll(false)`: a click with slight cursor drift
-                    // (common on a trackpad) would otherwise scroll-drag and eat
-                    // the button click.
-                    egui::ScrollArea::vertical()
-                        .drag_to_scroll(false)
-                        .show(ui, |ui| body(self, ui));
+                    egui::ScrollArea::vertical().show(ui, |ui| body(self, ui));
                 });
         }
         *open(self) = is_open;
     }
 
-    /// Paint the windows. Separate from [`run`] so the caller controls draw
-    /// ordering (egui goes on top, after the 2D HUD).
-    pub fn draw(&self) {
-        if self.visible {
-            egui_macroquad::draw();
-        }
-    }
-
-    /// The launcher window body: god mode, a grid of tool-window toggles, and the
-    /// live stats footer.
-    fn launcher_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
+    fn launcher_body(&mut self, ui: &mut egui::Ui, world: &mut World, fps: f32) {
         ui.add_space(2.0);
         ui.checkbox(&mut world.tunables.god_mode, "god mode  ·  no contact damage");
         ui.add_space(4.0);
@@ -268,14 +242,10 @@ impl DebugUi {
                 ui.checkbox(&mut self.win_file, "Tunables file");
                 ui.end_row();
             });
-        Self::stats_footer(ui, world);
+        Self::stats_footer(ui, world, fps);
     }
 
-    /// Flat: weapon picker + combat sliders + live TTK as one block. Equipping a
-    /// weapon loads its stats into these very sliders, and the readout reflects
-    /// them against the manual-spawn archetype — equip, tune, watch TTK move.
     fn loadout_section(&mut self, ui: &mut egui::Ui, world: &mut World, content: &Content) {
-        // Weapon picker — weapon-slot bases only.
         let weapons: Vec<usize> = content
             .bases
             .iter()
@@ -301,9 +271,6 @@ impl DebugUi {
         if ui.button("equip selected · arm the player").clicked()
             && let Some(base) = content.bases.get(self.weapon_base)
         {
-            // Replaces the active rack slot (so tuning doesn't pile up dupes) and
-            // loads the weapon's stats into these very sliders (the fire path's
-            // read surface), so equip → tune → watch TTK move still works.
             world.debug_equip_base(&base.id, content);
         }
 
@@ -317,9 +284,6 @@ impl DebugUi {
         ui.add(egui::Slider::new(&mut t.crit_multiplier, 1.0..=5.0).text("crit mult"));
         ui.add(egui::Slider::new(&mut t.contact_dps, 0.0..=100.0).text("contact dps"));
 
-        // Archetype fire-pattern knobs — shown only for the profile the equipped
-        // weapon actually uses (seeded from the weapon on equip, live here). The
-        // fire path reads these tunables, so a drag retunes the next shot.
         match world.equipped().map(|e| e.profile) {
             Some(FireProfile::Spread { .. }) => {
                 ui.add_space(4.0);
@@ -338,8 +302,6 @@ impl DebugUi {
             _ => {}
         }
 
-        // Live expected DPS/TTK of the current tunables weapon against the
-        // selected archetype — the same expected-value lens the sim reports.
         let weapon = Weapon {
             damage_per_shot: world.tunables.bullet_damage,
             fire_rate: world.tunables.fire_rate,
@@ -385,8 +347,6 @@ impl DebugUi {
         }
     }
 
-    /// Flat: auto-wave cadence and manual spawning together — the same job. The
-    /// archetype chosen here also drives the TTK readout in the loadout section.
     fn spawning_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -402,9 +362,6 @@ impl DebugUi {
         ui.add(egui::Slider::new(&mut t.spawn_min_distance, 1..=40).text("min distance"));
         ui.add(egui::Slider::new(&mut t.drop_chance, 0.0..=1.0).text("drop chance"));
 
-        // Per-archetype wave composition. Each wave draws its batch from these
-        // relative weights (0 = never spawn that type). All-zero ⇒ uniform, so
-        // the buttons make it easy to get back to shipping behaviour.
         subhead(ui, "wave composition (weights)");
         let n = content.enemies.len().min(bb_game::MAX_SPAWN_ARCHETYPES);
         for i in 0..n {
@@ -467,9 +424,6 @@ impl DebugUi {
         });
     }
 
-    /// Flat: roll and drop a loot item on demand — pick a base (or random),
-    /// rarity, and ilvl, then drop it on the player (instant pickup, for filling
-    /// the rack/bag) or at the cursor (lands on the ground to walk over).
     fn loot_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -530,7 +484,6 @@ impl DebugUi {
         });
     }
 
-    /// Folded: arena/BSP map swaps and the renderer debug-viz toggles.
     fn level_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
         ui.checkbox(&mut self.arena_pillars, "arena pillars (pathing obstacles)");
         ui.horizontal(|ui| {
@@ -540,8 +493,8 @@ impl DebugUi {
                     ..Default::default()
                 });
                 reload_world(world, map);
-                // Controlled-testing level: suspend waves, spawn by hand.
                 world.tunables.auto_spawn = false;
+                self.map_reloaded = true;
             }
             if ui.button("load BSP").clicked() {
                 let map = generate_bsp(&MapParams {
@@ -549,13 +502,13 @@ impl DebugUi {
                     ..Default::default()
                 });
                 reload_world(world, map);
+                self.map_reloaded = true;
             }
         });
         ui.checkbox(&mut self.show_flow, "show flow field (enemy pathing)");
         ui.checkbox(&mut self.show_entity_stats, "show entity stats (floating)");
     }
 
-    /// Folded: movement / pathing tunables.
     fn movement_body(ui: &mut egui::Ui, world: &mut World) {
         let t = &mut world.tunables;
         ui.add(egui::Slider::new(&mut t.player_speed, 1.0..=20.0).text("player speed"));
@@ -568,7 +521,6 @@ impl DebugUi {
         ui.add(egui::Slider::new(&mut t.stick_deadzone, 0.0..=0.6).text("stick deadzone"));
     }
 
-    /// Folded: one-shot world actions.
     fn actions_body(ui: &mut egui::Ui, world: &mut World) {
         ui.horizontal(|ui| {
             if ui.button("revive / heal").clicked() {
@@ -583,7 +535,6 @@ impl DebugUi {
         });
     }
 
-    /// Folded: export / import the tunables preset file.
     fn file_body(&mut self, ui: &mut egui::Ui, world: &mut World) {
         ui.horizontal(|ui| {
             if ui.button("export").clicked() {
@@ -607,11 +558,10 @@ impl DebugUi {
         }
     }
 
-    /// Always-visible footer: live counts and the last per-shot hit readout.
-    fn stats_footer(ui: &mut egui::Ui, world: &World) {
+    fn stats_footer(ui: &mut egui::Ui, world: &World, fps: f32) {
         ui.add_space(6.0);
         ui.separator();
-        ui.label(format!("fps {}", get_fps()));
+        ui.label(format!("fps {fps:.0}"));
         ui.label(format!(
             "enemies {}   projectiles {}   drops {}",
             world.enemies.len(),
@@ -623,10 +573,9 @@ impl DebugUi {
             world.player.x as u32, world.player.y as u32
         ));
         let last = match &world.last_hit {
-            Some(HitResult::Hit {
-                damage_dealt,
-                was_crit,
-            }) => format!("last hit {:.1}{}", damage_dealt, if *was_crit { " CRIT" } else { "" }),
+            Some(HitResult::Hit { damage_dealt, was_crit }) => {
+                format!("last hit {:.1}{}", damage_dealt, if *was_crit { " CRIT" } else { "" })
+            }
             Some(HitResult::Dodged) => "last hit DODGED".to_string(),
             None => "last hit —".to_string(),
         };
@@ -634,46 +583,188 @@ impl DebugUi {
     }
 }
 
-/// A minor divider label inside a section (e.g. "manual" within Spawning).
-fn subhead(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new(text.to_uppercase()).weak().size(10.5));
-    ui.add_space(1.0);
-}
-
-/// Live controller diagnostics — surfaces whether gilrs sees a pad, its SDL
-/// mapping (the usual "connected but dead" culprit when missing), and live
-/// stick/trigger/button state so you can confirm inputs are reaching the game.
-fn controller_body(ui: &mut egui::Ui, diag: &crate::PadDiag) {
-    if !diag.initialized {
-        ui.colored_label(egui::Color32::RED, "gilrs failed to initialize");
+/// Flow-field pathing viz — cyan arrows down the field toward the player, a
+/// yellow pad on the goal tile. Bevy `Gizmos` port of the old `draw_flow_field`;
+/// reads the same `steer_from` (+ discrete-saddle fallback) enemies follow.
+pub fn debug_flow_gizmos(ui_state: Res<DebugUi>, sim: Res<Sim>, mut gizmos: Gizmos) {
+    use bb_procgen::{Tile, UNREACHABLE};
+    if !(ui_state.visible && ui_state.show_flow) {
         return;
     }
-    if diag.pads.is_empty() {
-        ui.colored_label(
-            egui::Color32::YELLOW,
-            "no gamepad detected — gilrs sees 0 devices",
-        );
+    let world = &sim.0;
+    let flow = world.flow();
+    let map = &world.map;
+    let (px, py) = (world.player.x, world.player.y);
+    const R2: f32 = 30.0 * 30.0;
+    for ty in 0..map.height {
+        for tx in 0..map.width {
+            if !matches!(map.tile_at(tx, ty), Tile::Floor) {
+                continue;
+            }
+            let (cx, cz) = (tx as f32 + 0.5, ty as f32 + 0.5);
+            if (cx - px).powi(2) + (cz - py).powi(2) > R2 {
+                continue;
+            }
+            if flow.distance_at(tx, ty) == UNREACHABLE {
+                continue;
+            }
+            match flow.steer_from(cx, cz).or_else(|| flow.next_step_dir(cx, cz)) {
+                Some((dx, dz)) => {
+                    let from = Vec3::new(cx, 0.06, cz);
+                    let to = Vec3::new(cx + dx * 0.4, 0.06, cz + dz * 0.4);
+                    gizmos.line(from, to, Color::srgba(0.30, 0.80, 1.00, 0.7));
+                }
+                None => {
+                    gizmos.cube(
+                        Transform::from_xyz(cx, 0.06, cz).with_scale(Vec3::new(0.18, 0.02, 0.18)),
+                        Color::srgba(1.00, 1.00, 0.40, 0.85),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Floating Enemy/Combatant stat blocks above the nearest few enemies + a PLAYER
+/// block — an egui-overlay port of the old `draw_entity_stats`. World anchor →
+/// screen via `Camera::world_to_viewport`; labels are drawn as fixed-pos egui
+/// areas. Nearest `MAX_LABELS` enemies only; lowest id drawn last (on top).
+pub fn debug_entity_stats(
+    mut contexts: EguiContexts,
+    ui_state: Res<DebugUi>,
+    sim: Res<Sim>,
+    content: Res<GameContent>,
+    cam: Query<(&Camera, &GlobalTransform), With<FollowCam>>,
+) -> Result {
+    use bb_procgen::UNREACHABLE;
+    const MAX_LABELS: usize = 5;
+    if !(ui_state.visible && ui_state.show_entity_stats) {
+        return Ok(());
+    }
+    let Ok((camera, cam_xf)) = cam.single() else {
+        return Ok(());
+    };
+    let ctx = contexts.ctx_mut()?;
+    let world = &sim.0;
+    let (px, py) = (world.player.x, world.player.y);
+
+    let mut ranked: Vec<(f32, usize)> = world
+        .enemies
+        .iter()
+        .enumerate()
+        .map(|(i, e)| ((e.x - px).powi(2) + (e.y - py).powi(2), i))
+        .collect();
+    ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ranked.truncate(MAX_LABELS);
+    // Lowest id last → drawn on top when boxes overlap.
+    ranked.sort_by(|a, b| world.enemies[b.1].id.cmp(&world.enemies[a.1].id));
+
+    let label = |ctx: &egui::Context, id: &str, world_pos: Vec3, lines: &[String], accent: egui::Color32| {
+        if let Ok(screen) = camera.world_to_viewport(cam_xf, world_pos) {
+            egui::Area::new(egui::Id::new(("dbg_stat", id)))
+                .fixed_pos(egui::pos2(screen.x, screen.y))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_black_alpha(160))
+                        .inner_margin(4.0)
+                        .show(ui, |ui| {
+                            for l in lines {
+                                ui.label(egui::RichText::new(l).size(12.0).color(accent));
+                            }
+                        });
+                });
+        }
+    };
+
+    let accent = egui::Color32::from_rgb(0xf7, 0xd9, 0x8c);
+    for &(d2, i) in &ranked {
+        let e = &world.enemies[i];
+        let id = content
+            .0
+            .enemies
+            .get(e.archetype)
+            .map(|a| a.id.as_str())
+            .unwrap_or("?");
+        let c = &e.combatant;
+        let ilvl = content.0.enemies.get(e.archetype).map(|a| a.ilvl).unwrap_or(0);
+        let flow_d = world.flow().distance_at(e.x as u32, e.y as u32);
+        let flow_s = if flow_d == UNREACHABLE { "∞".into() } else { flow_d.to_string() };
+        let state = if e.awake { "" } else { "  [idle]" };
+        let lines = [
+            format!("{id} #{}  il{ilvl}{state}", e.id),
+            format!("hp {:.0}/{:.0}", c.current_life, c.max_life),
+            format!("arm {:.0}  eva {:.0}", c.armor, c.evasion),
+            format!("spd {:.1}  d {:.1}  flow {flow_s}", e.speed, d2.sqrt()),
+        ];
+        label(ctx, &format!("e{}", e.id), Vec3::new(e.x, 1.9, e.y), &lines, accent);
+    }
+
+    let p = &world.player;
+    let lines = [
+        "PLAYER".to_string(),
+        format!("hp {:.0}/{:.0}", p.current_life, p.max_life),
+        format!("pos {:.1}, {:.1}  cd {:.2}", p.x, p.y, world.player_fire_cooldown),
+        format!("enemies {}  proj {}", world.enemies.len(), world.projectiles.len()),
+    ];
+    label(
+        ctx,
+        "player",
+        Vec3::new(px, 1.9, py),
+        &lines,
+        egui::Color32::from_rgb(0x8c, 0xf7, 0x9e),
+    );
+    Ok(())
+}
+
+impl PadView {
+    fn from_gamepad(name: &Name, gp: &Gamepad) -> Self {
+        const BUTTONS: &[(&str, GamepadButton)] = &[
+            ("A", GamepadButton::South),
+            ("B", GamepadButton::East),
+            ("X", GamepadButton::West),
+            ("Y", GamepadButton::North),
+            ("LB", GamepadButton::LeftTrigger),
+            ("RB", GamepadButton::RightTrigger),
+            ("LT", GamepadButton::LeftTrigger2),
+            ("RT", GamepadButton::RightTrigger2),
+            ("Start", GamepadButton::Start),
+            ("Select", GamepadButton::Select),
+            ("Up", GamepadButton::DPadUp),
+            ("Down", GamepadButton::DPadDown),
+            ("Left", GamepadButton::DPadLeft),
+            ("Right", GamepadButton::DPadRight),
+        ];
+        let ls = gp.left_stick();
+        let rs = gp.right_stick();
+        PadView {
+            name: name.as_str().to_string(),
+            vendor: gp.vendor_id(),
+            product: gp.product_id(),
+            left_stick: (ls.x, ls.y),
+            right_stick: (rs.x, rs.y),
+            right_trigger: gp.get(GamepadButton::RightTrigger2).unwrap_or(0.0),
+            buttons_down: BUTTONS.iter().filter(|(_, b)| gp.pressed(*b)).map(|(n, _)| *n).collect(),
+        }
+    }
+}
+
+/// Live controller diagnostics from `bevy_gilrs`. Confirms a pad is seen and its
+/// stick/trigger/button state is reaching the game.
+fn controller_body(ui: &mut egui::Ui, pads: &[PadView]) {
+    if pads.is_empty() {
+        ui.colored_label(egui::Color32::YELLOW, "no gamepad detected");
         ui.label("(on macOS, Xbox controllers over USB use a proprietary");
         ui.label(" protocol IOKit/HID can't read — try Bluetooth pairing)");
         return;
     }
-    for (i, p) in diag.pads.iter().enumerate() {
+    for (i, p) in pads.iter().enumerate() {
         ui.colored_label(egui::Color32::LIGHT_GREEN, format!("[{i}] {}", p.name));
-        let mapped = !p.mapping.starts_with("UNMAPPED");
-        ui.colored_label(
-            if mapped { egui::Color32::GRAY } else { egui::Color32::YELLOW },
-            format!("  mapping: {}", p.mapping),
-        );
-        ui.label(format!("  power: {}", p.power));
-        ui.label(format!(
-            "  L-stick: ({:+.2}, {:+.2})",
-            p.left_stick.0, p.left_stick.1
-        ));
-        ui.label(format!(
-            "  R-stick: ({:+.2}, {:+.2})",
-            p.right_stick.0, p.right_stick.1
-        ));
+        if let (Some(v), Some(pr)) = (p.vendor, p.product) {
+            ui.label(format!("  vendor {v:#06x}  product {pr:#06x}"));
+        }
+        ui.label(format!("  L-stick: ({:+.2}, {:+.2})", p.left_stick.0, p.left_stick.1));
+        ui.label(format!("  R-stick: ({:+.2}, {:+.2})", p.right_stick.0, p.right_stick.1));
         ui.label(format!("  RT: {:.2}", p.right_trigger));
         let btns = if p.buttons_down.is_empty() {
             "—".to_string()
@@ -681,39 +772,23 @@ fn controller_body(ui: &mut egui::Ui, diag: &crate::PadDiag) {
             p.buttons_down.join(", ")
         };
         ui.label(format!("  buttons: {btns}"));
-
-        // Raw (pre-mapping) state — the data needed to build a mapping
-        // for an unmapped pad. Move each stick/trigger and watch which
-        // raw axis code changes; press buttons to see their codes.
-        if !mapped {
-            ui.separator();
-            ui.colored_label(egui::Color32::LIGHT_BLUE, "  raw (for mapping):");
-            ui.label(format!("  uuid: {}", p.uuid));
-            for (code, val) in &p.raw_axes {
-                ui.label(format!("    axis {code}: {val:+.2}"));
-            }
-            let rb = if p.raw_buttons.is_empty() {
-                "—".to_string()
-            } else {
-                p.raw_buttons.join(", ")
-            };
-            ui.label(format!("    btn pressed: {rb}"));
-        }
     }
 }
 
-/// Swap the world onto a new map, preserving the current tunables (a `World`
-/// is otherwise rebuilt from scratch with defaults). Inventory / kills / XP
-/// reset — this is a fresh level, not a checkpoint.
+fn subhead(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(text.to_uppercase()).weak().size(10.5));
+    ui.add_space(1.0);
+}
+
+/// Swap the world onto a new map, preserving tunables (a fresh `World` would
+/// reset them). Inventory / kills / XP reset — a fresh level, not a checkpoint.
 fn reload_world(world: &mut World, map: Map) {
     let saved = world.tunables;
     *world = World::new(map);
     world.tunables = saved;
 }
 
-/// Write the current tunables to [`TUNABLES_PATH`] as pretty RON (the project's
-/// content format, so the file is hand-editable). Returns the absolute path on
-/// success for the status line.
 fn export(tunables: &Tunables) -> Result<String, String> {
     let ron = ron::ser::to_string_pretty(tunables, ron::ser::PrettyConfig::default())
         .map_err(|e| e.to_string())?;
@@ -724,8 +799,6 @@ fn export(tunables: &Tunables) -> Result<String, String> {
     Ok(abs)
 }
 
-/// Read tunables back from [`TUNABLES_PATH`]. A malformed or stale file is a
-/// recoverable error surfaced in the status line, not a panic.
 fn import() -> Result<Tunables, String> {
     let text = std::fs::read_to_string(TUNABLES_PATH).map_err(|e| e.to_string())?;
     ron::from_str(&text).map_err(|e| e.to_string())

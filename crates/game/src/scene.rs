@@ -181,12 +181,43 @@ pub fn spawn_map(
     mut cache: ResMut<MatCache>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let map = &sim.0.map;
     let mut painter = Painter {
         cache: &mut cache,
         materials: &mut materials,
     };
+    build_map_geometry(&mut commands, &sim.0.map, &assets, &mut painter);
+}
 
+/// Respawn the static map geometry after a debug map-swap: despawn the old
+/// [`MapGeometry`], rebuild from the (already-reloaded) world map. Debug-only —
+/// the only path that mutates the map at runtime.
+#[cfg(feature = "debug")]
+pub fn reload_map_geometry(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    assets: Res<RenderAssets>,
+    mut cache: ResMut<MatCache>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut dirty: ResMut<crate::debug::MapDirty>,
+    existing: Query<Entity, With<MapGeometry>>,
+) {
+    if !dirty.0 {
+        return;
+    }
+    dirty.0 = false;
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let mut painter = Painter {
+        cache: &mut cache,
+        materials: &mut materials,
+    };
+    build_map_geometry(&mut commands, &sim.0.map, &assets, &mut painter);
+}
+
+/// Spawn the floor grid, wall cubes, and props for `map`, all tagged
+/// [`MapGeometry`]. Shared by initial load and debug map-swap.
+fn build_map_geometry(commands: &mut Commands, map: &Map, assets: &RenderAssets, painter: &mut Painter) {
     // Floor: one textured checker quad per tile, tinted by (tx+ty) parity.
     for ty in 0..map.height {
         for tx in 0..map.width {
@@ -226,7 +257,7 @@ pub fn spawn_map(
     }
 
     // Props: deterministic scatter from the map seed (render-only, no collision).
-    spawn_props(&mut commands, &assets, &mut painter, map);
+    spawn_props(commands, assets, painter, map);
 }
 
 /// Scatter sparse decorative props on floor tiles, chosen deterministically
