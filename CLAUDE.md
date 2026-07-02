@@ -1,4 +1,4 @@
-# Project: bigbox — BoxHead-Inspired ARPG (Bevy, wasm)
+# Project: bigbox — BoxHead-Inspired ARPG (Bevy)
 
 A top-down twin-stick shooter with deep ARPG progression, procgen levels, and a deep loot system. Inspired by BoxHead 2 for combat feel, Crimsonland/Nation Red for arena flow, and Diablo II/III for loot-rarity flow. The stat-aggregation math is borrowed from Path of Exile / Last Epoch — it's the de-facto ARPG standard and we don't need to reinvent it.
 
@@ -8,7 +8,7 @@ Target: **desktop-first** — native builds for Windows / macOS / Linux. Single-
 >
 > The two repos are **duplicate-and-diverge**, not a shared workspace: shared logic (`core`, `content`, `procgen`, the engine-agnostic `game` World/sim) was copied in and now evolves independently here. Genuine bugfixes to shared logic get hand-ported between repos.
 >
-> **Migration status:** the `game` crate in this repo is still the *inherited macroquad shell*. Rendering/input/window/UI (`render.rs`, `main.rs`, `input.rs`, `ui.rs`, debug egui) are being ported to Bevy; the headless simulation (`game/lib.rs` — World, tick, `Command` stream) is engine-agnostic and ports largely unchanged. Crate names still carry the `head2box-*` / `h2b_*` prefixes — renaming to `bigbox-*` is a pending migration step.
+> **Migration status (2026-07-02): COMPLETE.** The `game` crate now runs entirely on **Bevy 0.19** — window/camera, input (`bevy_input` + `bevy_gilrs`), 3D scene (`scene.rs`), HUD + inventory (`bevy_ui`, `hud.rs`), and the debug tuning overlay (`bevy_egui`, `debug.rs`, `--features debug`). **macroquad is fully removed** from the workspace. The headless simulation (`game/lib.rs` — World, tick, `Command` stream) ported unchanged, as planned. Crates were renamed `bigbox-*` / `bb_*` in Phase 0. The next epic is the *payoff* the move unlocked: GLTF/PBR/lighting/skeletal-animation/hot-reload (see "Deferred epic" at the end). Full phase log in `.attic/migration/plan.md`.
 
 ---
 
@@ -42,7 +42,7 @@ Reference: `.attic/context/spacetime-db.md` has the docs snapshot.
 
 Retrofitting netcode is expensive even with SpacetimeDB. Three habits, adopted now, keep multiplayer cheap to add without slowing single-player iteration:
 
-1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer. *Already concrete*: `h2b_game::Command::{Move, Fire}`; the render/input layer never mutates the world directly, it just emits commands into `World::apply`. (This stays true across the Bevy port — the Bevy input systems emit the same `Command`s.)
+1. **Inputs are a command stream.** Player input emits `Command` enum variants, not direct state mutation. Trivially serializable, replayable — and on the coop branch, each command type maps to one SpacetimeDB reducer. *Already concrete*: `bb_game::Command::{Move, Fire}`; the render/input layer never mutates the world directly, it just emits commands into `World::apply`. (This stays true across the Bevy port — the Bevy input systems emit the same `Command`s.)
 2. **Game state is data, not pointers.** Items already carry their seed and serialize via RON — extend the same instinct to enemies, projectiles, and world chunks. No `Rc<RefCell<>>` graphs, no global singletons. On the coop branch, this state becomes the SpacetimeDB table schema; if it can't serialize, it can't replicate.
 3. **`core` stays headless and deterministic.** No `thread_rng`, no `std::time::now()` (use `ctx.timestamp` once we're in reducer-land), no reaching into the renderer from logic. Same-seed reproducibility (already in tests) is the load-bearing property for both client-side prediction and reducer rollback.
 
@@ -89,14 +89,14 @@ One spike worth doing before we lean hard on SpacetimeDB: verify the **native Ru
   /sim            ✅ CLI loot simulator (CSV + summary modes, snapshot-locked)
   /procgen        ✅ BSP map generation, flow-field pathing, weighted spawn placement
   /procgen-viz    ✅ CLI visualizer for procgen output (map / flow / spawn picks)
-  /game           🔧 game logic + shell. `lib.rs` (World, tick, Command stream,
-                     movement, enemies, projectiles, waves, loot pickup, rack +
-                     inventory) is engine-agnostic and ports to Bevy unchanged.
-                     The macroquad-coupled parts (render.rs, main.rs, input.rs,
-                     ui.rs, debug egui) are INHERITED and being ported to Bevy:
-                     window + follow-cam → Bevy Camera3d, primitive/OBJ draws →
-                     Bevy meshes/GLTF scenes, macroquad input → bevy_input, the
-                     2D HUD/inventory → bevy_ui, debug egui → bevy_egui.
+  /game           ✅ game logic + Bevy shell. `lib.rs` (World, tick, Command
+                     stream, movement, enemies, projectiles, waves, loot, rack +
+                     inventory) is engine-agnostic. The shell is Bevy systems:
+                     `main.rs` (App, Camera3d follow-cam, resources), `scene.rs`
+                     (boxy-3D meshes/materials/gizmos), `input.rs`+`pad.rs`
+                     (bevy_input + bevy_gilrs → Command stream), `hud.rs`
+                     (bevy_ui HUD + inventory), `debug.rs` (bevy_egui overlay,
+                     `--features debug`).
 /assets           ⏳ GLTF/GLB models + animations, textures, audio (CC0
                      placeholders until art pipeline exists) — loadable
                      through Bevy's asset server with hot-reload.
@@ -186,7 +186,7 @@ Approach decided: **BSP** (binary space partition). Recursive rect-splitting, on
 
 Companion systems in the same crate:
 
-- **`FlowField`** — 4-connected BFS distance field from a goal (typically the player), computed once per player-tile-change. Enemies steer down it in O(1) per enemy — classic BoxHead-style swarm convergence with no per-enemy pathing work. A connectivity property test ("every Floor on a BSP map is reachable from spawn") doubles as a procgen invariant. Two readers: `next_step_from` (discrete best 4-neighbor) and **`steer_from`** (smooth) — the latter bilinearly samples the distance field and follows its negative gradient for continuous 8-directional motion, sampling walls as a penalty above the local distance so the gradient *bends around* pillars/corners instead of clipping in. At a symmetric saddle (both detours equal, gradient cancels) it returns `None` and the caller falls back to `next_step_dir` (the discrete tiebreak) to pick a side. `h2b_game::move_enemies` uses `steer_from` with per-axis wall-slide; the debug flow viz draws the same `steer_from` directions enemies actually follow.
+- **`FlowField`** — 4-connected BFS distance field from a goal (typically the player), computed once per player-tile-change. Enemies steer down it in O(1) per enemy — classic BoxHead-style swarm convergence with no per-enemy pathing work. A connectivity property test ("every Floor on a BSP map is reachable from spawn") doubles as a procgen invariant. Two readers: `next_step_from` (discrete best 4-neighbor) and **`steer_from`** (smooth) — the latter bilinearly samples the distance field and follows its negative gradient for continuous 8-directional motion, sampling walls as a penalty above the local distance so the gradient *bends around* pillars/corners instead of clipping in. At a symmetric saddle (both detours equal, gradient cancels) it returns `None` and the caller falls back to `next_step_dir` (the discrete tiebreak) to pick a side. `bb_game::move_enemies` uses `steer_from` with per-axis wall-slide; the debug flow viz draws the same `steer_from` directions enemies actually follow.
 
   **Aggro (game side).** Enemies spawn **dormant** (`EnemyInstance.awake = false`) and hold position. A per-tick awareness pass wakes any dormant enemy that spots the player — within `sight_range` *and* clear line of sight — and getting shot also wakes one. The latch is permanent: once awake an enemy gives chase via the steering below even after losing sight. Only awake enemies move. (`debug_wake_all` + the panel's "wake all" button aggro everything for testing; the floating stat block tags dormant enemies `[idle]`.)
 
@@ -214,7 +214,7 @@ Hand-authored room templates and biomes are deferred — BSP rooms are enough sc
 `crates/sim` is the project's primary tuning tool. Built first, before rendering / procgen / combat had any callers, exactly as the original plan called for. **Run it whenever content or roll math changes.**
 
 ```
-cargo run -p head2box-sim -- --monster-level 60 --kills 20000 --seed 42 --summary
+cargo run -p bigbox-sim -- --monster-level 60 --kills 20000 --seed 42 --summary
 ```
 
 Two modes:
@@ -233,10 +233,10 @@ egui panel for the questions you can only answer by playing: does enemy speed ×
 feel oppressive, is the fire rate satisfying, how dense should waves be.
 
 ```
-cargo run -p head2box-game --features debug   # or: cargo dbg
+cargo run -p bigbox-game --features debug   # or: cargo dbg
 ```
 
-> **Port note:** the overlay is being moved from `egui-macroquad` to **`bevy_egui`**. The load-bearing design below (Tunables on `World`, `debug_*` methods, live sliders bound to `world.tunables`) is engine-agnostic and carries over unchanged — only the egui *host* changes.
+> **Host note:** the overlay runs on **`bevy_egui`** (`debug.rs` is a `bevy_egui` system in the `EguiPrimaryContextPass` schedule). The load-bearing design below (Tunables on `World`, `debug_*` methods, live sliders bound to `world.tunables`) is engine-agnostic and was unchanged by the host swap from `egui-macroquad`.
 
 Feature-gated: the `debug` feature pulls the local-dev-only deps (the egui host,
 `serde`/`ron` for tunable export, and `clap` for CLI parsing), so a normal
@@ -245,10 +245,10 @@ the panel. `.cargo/config.toml` defines shortcut aliases — `cargo dbg` (BSP
 dungeon), `cargo arena`, `cargo arena-empty`. Aliases can't set env vars, so the
 level rides in as a CLI arg (`-- arena`); under the `debug` feature a clap parser
 (`Cli`) reads it (plus `--seed`, `--help`), and a non-debug build falls back to
-reading `H2B_LEVEL` / `H2B_SEED` env vars with no arg parser linked in.
+reading `BB_LEVEL` / `BB_SEED` env vars with no arg parser linked in.
 
 Mechanism — the load-bearing refactor: every gameplay knob that used to be a
-`const` now lives in `h2b_game::Tunables` on `World`, and the simulation reads
+`const` now lives in `bb_game::Tunables` on `World`, and the simulation reads
 **only** from there. The `const`s remain the default source (`Tunables::default`
 snapshots them), so behaviour and tests are unchanged until something mutates a
 field. The panel binds sliders straight to `world.tunables` (damage, fire rate,
@@ -258,7 +258,7 @@ count + spread half-angle, or rocket blast radius + speed factor — shown only
 for the held weapon's profile), plus god mode and an auto-spawn toggle. A **loot** section rolls a drop on demand — pick a base (or random), rarity, and ilvl, dropped on the player (instant pickup, to fill the rack/bag) or at the cursor (`World::debug_drop`, which forces a base by rolling against a one-item pool). Manual spawning, clear/revive,
 and a per-shot hit readout (damage dealt / crit / dodge, surfaced from the
 otherwise-discarded `resolve_hit` result) go through `World::debug_*` methods.
-Export/import round-trips the whole `Tunables` block to `head2box-tunables.ron`
+Export/import round-trips the whole `Tunables` block to `bigbox-tunables.ron`
 (pretty RON, hand-editable) in the working dir — dial in a feel, export it, and
 the file is a reusable preset (serde derives are debug-gated, so non-debug
 builds stay serde-free).
@@ -271,9 +271,9 @@ another `Tunables` producer.
 ### The debug level (arena) — weapons, TTK, pathfinding
 
 The overlay doubles as a test harness. Launch straight into an open arena with
-`H2B_LEVEL=arena` (or `arena-empty` for no pillars; anything else → the BSP
+`BB_LEVEL=arena` (or `arena-empty` for no pillars; anything else → the BSP
 dungeon), or hot-swap maps from the overlay's **level / map** section. The arena
-(`h2b_procgen::generate_arena`) is a big bordered room with an optional 2×2
+(`bb_procgen::generate_arena`) is a big bordered room with an optional 2×2
 pillar grid — open sightlines for tuning, real geometry for watching pathing.
 The same fully-connected invariant the BSP maps hold is property-tested. Both
 arena entry paths (launch and overlay button) start with **auto-spawn off** so
@@ -281,7 +281,7 @@ you populate it deliberately rather than getting swarmed on entry.
 
 ```
 cargo arena                                    # shortcut alias
-H2B_LEVEL=arena cargo run -p head2box-game --features debug   # equivalent
+BB_LEVEL=arena cargo run -p bigbox-game --features debug   # equivalent
 ```
 
 Three tuning levers beyond the raw sliders:
@@ -321,8 +321,8 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 - ⏳ **Biomes:** 1 — deferred; BSP procgen produces a single aesthetic for now, biome variation layers on later.
 - ⏳ **Room templates:** 20 — deferred; v1 uses generic BSP rooms. Hand-authored templates can stitch in when content scope demands it.
 - ✅ **Progression:** XP curve to level 30. Passive tree skipped per the "or skip" branch of the original spec.
-- ✅ **Game runtime (window + movement + shooting):** boxy-3D macroquad shell with WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor raycast onto the ground plane). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here. Also takes **twin-stick gamepad** input via `gilrs` (left stick = move, right stick = aim, right trigger = fire); the `pad` module resolves one `PadInput`/frame and `collect_input` merges it with keyboard/mouse (either works). Gamepad works **native and web (confirmed on real hardware in-browser), but by different paths**: gilrs's web backend reaches the browser Gamepad API through `wasm-bindgen`, whose glue macroquad's plain loader can't satisfy — so gilrs is native-only, and on wasm the `pad` module reads the Gamepad API itself via a small miniquad plugin (`web/quad-gamepad.js`) that passes the numeric axes/buttons straight across the boundary (no wasm-bindgen, no marshaling). Same twin-stick mapping; both arms cfg-split in `pad.rs`. On web the browser only surfaces a pad after a button press on it (privacy gate) — `quad-gamepad.js` logs connect/disconnect and `index.html` shows a self-dismissing hint.
-- ✅ **Game runtime (enemies + hit detection + loot pickup):** waves spawn via `pick_spawn_points`, path to the player with `FlowField` (recomputed per player-tile-change), take projectile hits through `core::combat::resolve_hit` (enemy armor/dodge applies), and on death award XP + roll an `ItemInstance` drop the player walks over to collect. Touching enemies drain life; zero life → death + restart. Loot rolls and spawns are seeded per-event from `(world_seed, event_id)`; every enemy/drop carries a stable id (the eventual table key + interpolation match key). **Player loadout is wired:** the player is armed with a pistol at setup (`World::equip_base`) and a picked-up weapon auto-equips when it's a strict DPS upgrade (`World::equip` → `aggregate_item` → `Weapon::from_stats`, routing damage/fire-rate/crit into `Tunables`, the fire path's read surface). Armor isn't equipped yet — only weapons. **Weapons stack into a switchable rack** (`World::loadout`, a `Vec<EquippedWeapon>` each aggregated once on acquisition) holding **one weapon per archetype** — the best instance of each base. A pickup of a new archetype claims a slot; a better instance of an archetype already racked replaces it (the displaced one falls to inventory); a worse/equal duplicate goes straight to inventory (`World::acquire_item`). `Command::{SwitchWeapon, CycleWeapon}` (number keys / Q-E / mouse wheel / controller bumpers) re-point `active` and reseed the tunables. Switching needs no content (the rack is precomputed), so it resolves in the `apply` command stream with no extra plumbing. **Inventory screen** (`I` / `Tab`, pauses the sim): a macroquad-drawn modal (`game/src/ui.rs` — a small 2D widget layer, since egui is debug/native-only and can't link on wasm; HUD + inventory text render in Quantico, bundled at `game/assets/fonts/quantico` under the OFL and embedded via `include_bytes!` so it's wasm-safe with no runtime fetch) listing the equipped rack (click to switch) and the collected-item bag (click a weapon → `World::equip_from_inventory`, which unlike a pickup places the chosen weapon into its archetype slot *unconditionally* and drops the displaced one back to the bag). Armor is listed but not yet equippable. **Archetypes fire distinctly** (game-layer only, keyed by base id in `fire_profile`): pistol/SMG fire a single shot, the shotgun fires a 6-pellet damage-split cone (point-blank ≈ full damage, fans out at range), and the rocket launcher lobs a slow `aoe_radius` shot that detonates on enemy *or* wall impact, dealing full damage to all enemies in the blast (no falloff) plus a transient `Explosion` render marker. The loot sim still models a weapon as one hit, so pellet/AoE can shift real DPS-vs-armor away from the sim's numbers — retune there if it drifts.
+- ✅ **Game runtime (window + movement + shooting):** boxy-3D **Bevy** shell — a `Camera3d` angled follow-cam over extruded-cube walls and stacked-cube box-people. WASD/arrow movement (per-axis wall sliding) and mouse-aimed shooting (cursor → ground-plane via `Camera::viewport_to_world`). Projectiles fly with cooldown, despawn on wall collision or lifetime expiry. The `Command` stream pattern is concrete here (`player_input` system → `World::apply`). Also takes **twin-stick gamepad** input via **`bevy_gilrs`** (left stick = move, right stick = aim, right trigger = fire, bumpers = cycle); `pad::read_pad` resolves one `PadInput`/frame from the `Gamepad` component and `input::collect_commands` merges it with keyboard/mouse. Desktop-native only — no wasm gamepad path (deleted with the rest of the web chain).
+- ✅ **Game runtime (enemies + hit detection + loot pickup):** waves spawn via `pick_spawn_points`, path to the player with `FlowField` (recomputed per player-tile-change), take projectile hits through `core::combat::resolve_hit` (enemy armor/dodge applies), and on death award XP + roll an `ItemInstance` drop the player walks over to collect. Touching enemies drain life; zero life → death + restart. Loot rolls and spawns are seeded per-event from `(world_seed, event_id)`; every enemy/drop carries a stable id (the eventual table key + interpolation match key). **Player loadout is wired:** the player is armed with a pistol at setup (`World::equip_base`) and a picked-up weapon auto-equips when it's a strict DPS upgrade (`World::equip` → `aggregate_item` → `Weapon::from_stats`, routing damage/fire-rate/crit into `Tunables`, the fire path's read surface). Armor isn't equipped yet — only weapons. **Weapons stack into a switchable rack** (`World::loadout`, a `Vec<EquippedWeapon>` each aggregated once on acquisition) holding **one weapon per archetype** — the best instance of each base. A pickup of a new archetype claims a slot; a better instance of an archetype already racked replaces it (the displaced one falls to inventory); a worse/equal duplicate goes straight to inventory (`World::acquire_item`). `Command::{SwitchWeapon, CycleWeapon}` (number keys / Q-E / mouse wheel / controller bumpers) re-point `active` and reseed the tunables. Switching needs no content (the rack is precomputed), so it resolves in the `apply` command stream with no extra plumbing. **Inventory screen** (`I` / `Tab`, pauses the sim via the `Paused` gate): a **`bevy_ui`** modal (`game/src/hud.rs`) — HUD + inventory render in Quantico (bundled at `game/assets/fonts/quantico` under the OFL, loaded as a Bevy `Font` from the embedded ttf so the binary stays self-contained). Lists the equipped rack (click a slot → `World::switch_weapon`) and the collected-item bag (click a weapon → `World::equip_from_inventory`, which unlike a pickup places the chosen weapon into its archetype slot *unconditionally* and drops the displaced one back to the bag), via Bevy `Interaction`. Armor is listed but not yet equippable. **Archetypes fire distinctly** (game-layer only, keyed by base id in `fire_profile`): pistol/SMG fire a single shot, the shotgun fires a 6-pellet damage-split cone (point-blank ≈ full damage, fans out at range), and the rocket launcher lobs a slow `aoe_radius` shot that detonates on enemy *or* wall impact, dealing full damage to all enemies in the blast (no falloff) plus a transient `Explosion` render marker. The loot sim still models a weapon as one hit, so pellet/AoE can shift real DPS-vs-armor away from the sim's numbers — retune there if it drifts.
 - ⏳ **Persistence:** native save-file on debounce. The "quit/crash mid-fight" path needs to work before save format gets locked.
 
 ---
@@ -357,3 +357,16 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 2. Save format versioning strategy — bump-on-break with migrations, or backwards-compatible? Decide before the first persistent save.
 3. ~~Procgen approach — BSP, WFC, chunk-stitched, or hybrid?~~ **Resolved: BSP**. Recursive space-partition with L-corridor connections, deterministic from seed. Hand-authored room templates can layer on top later if needed; the BSP cleanly partitions the work.
 4. Audio stack — `bevy_audio` for simple needs, or `bevy_kira_audio` (`kira`) for mixing/effects/spatial. Desktop-only drops the browser-format caveats. Confirm at the point audio matters.
+
+---
+
+## Deferred epic: rendering fidelity (the payoff the Bevy move unlocks)
+
+The macroquad → Bevy migration (phases 0–5, complete 2026-07-02) deliberately **replicated the old boxy-primitive look** — same flat colors, stacked cubes, no lighting — so any regression was obviously a port bug, not new art. That's parity, not the point. The reason for the move was the *rendering/assets ceiling* macroquad couldn't clear; cashing that in is the next epic, a separate body of work:
+
+- **GLTF/GLB import with skeletal animation** — real character models + animation clips (replace the stacked-cube box-people), via `bevy_gltf` + the animation graph.
+- **PBR materials + lighting + shadows** — currently every material is `unlit: true` with `Tonemapping::None` to match macroquad's flat look. Turn on real lights, PBR, shadow maps; retune colors for the lit pipeline.
+- **Asset pipeline + hot-reload** — load models/textures/audio through Bevy's `AssetServer` (dev hot-reload), instead of the `include_bytes!`/`include_str!` embeds inherited for a self-contained binary.
+- **Cube wireframe edges** — the one deliberate parity gap: macroquad's `draw_cube_wires` black outlines weren't reproduced (unlit flat cubes). Moot once real models/lighting land; revisit only if the boxy look is kept.
+
+Do this **after** the game is confirmed fun on the parity build, and treat it as its own project (art direction, asset sourcing) — not migration cleanup. The **SpacetimeDB coop spike** (see Multiplayer posture) is an independent parallel track.

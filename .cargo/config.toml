@@ -1,6 +1,5 @@
 # Shortcut subcommands. Cargo aliases can't set env vars, so the level is
-# passed as a CLI arg (`-- arena`) which the game binary reads in
-# `selected_level()` — equivalent to `BB_LEVEL=arena`.
+# passed as a CLI arg (`-- arena`) which the game binary reads in `resolve_run()` — equivalent to `BB_LEVEL=arena`.
 #
 #   cargo arena         → debug build, open pillar arena (auto-spawn off)
 #   cargo arena-empty   → debug build, open arena, no pillars
