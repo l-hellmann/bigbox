@@ -39,6 +39,9 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_gltf",
     "bevy_winit",
     "bevy_ui",
+    # UI layout/interaction (`bevy_ui`) and UI *rendering* are split in 0.19 —
+    # without `bevy_ui_render` the HUD lays out but nothing draws it.
+    "bevy_ui_render",
     "bevy_text",
     "default_font",
     "bevy_gizmos",

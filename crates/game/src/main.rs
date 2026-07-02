@@ -32,6 +32,7 @@ use bevy::window::PrimaryWindow;
 #[cfg(feature = "debug")]
 #[allow(dead_code)]
 mod debug;
+mod hud;
 mod input;
 mod pad;
 // Inherited macroquad render/HUD — its 2D HUD + debug viz are ported in Phases
@@ -243,13 +244,23 @@ fn main() {
         .insert_resource(Paused(false))
         .init_resource::<Aim>()
         .init_resource::<scene::ProjectilePool>()
+        .init_resource::<hud::InventoryOpen>()
         // World + camera exist first, then render assets, then the static map
-        // geometry (which reads both).
+        // geometry (which reads both). The HUD tree is independent.
         .add_systems(
             Startup,
-            (setup, scene::setup_render_assets, scene::spawn_map).chain(),
+            (
+                (setup, scene::setup_render_assets, scene::spawn_map).chain(),
+                hud::setup_ui,
+            ),
         )
         .configure_sets(Update, SimSet.run_if(not_paused))
+        // UI/app input (toggle inventory, quit, restart) runs unpaused; it also
+        // drives the pause gate the sim + player input sit behind.
+        .add_systems(
+            Update,
+            (ui_input, hud::inventory_clicks, hud::manage_inventory).chain(),
+        )
         // Input feeds the command stream, then the world ticks — ordered.
         .add_systems(Update, (player_input, tick_world).chain().in_set(SimSet))
         // Renderer reads post-tick state: reconcile entities + follow the cam.
@@ -262,6 +273,8 @@ fn main() {
                 scene::sync_projectiles,
                 scene::sync_misc,
                 scene::draw_aim,
+                hud::hud_update,
+                hud::inventory_hover,
             )
                 .after(SimSet),
         );
@@ -299,6 +312,42 @@ fn setup(mut commands: Commands, run: Res<RunConfig>) {
 /// Run condition: sim + camera advance only while unpaused.
 fn not_paused(paused: Res<Paused>) -> bool {
     !paused.0
+}
+
+/// App/UI input, run unpaused (so you can close the inventory or quit while the
+/// sim is frozen): `I`/`Tab` toggle the inventory, `Esc` backs out of it then
+/// quits, `R` restarts from the dead screen. Drives the `Paused` gate that the
+/// sim + player-input systems sit behind (inventory open ⇒ paused).
+fn ui_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut inv: ResMut<hud::InventoryOpen>,
+    mut paused: ResMut<Paused>,
+    mut sim: ResMut<Sim>,
+    content: Res<GameContent>,
+    run: Res<RunConfig>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    // Death closes the inventory (no browsing the bag on the dead screen).
+    if sim.0.game_over {
+        inv.0 = false;
+    }
+    // Esc backs out of the inventory first, then quits.
+    if keys.just_pressed(KeyCode::Escape) {
+        if inv.0 {
+            inv.0 = false;
+        } else {
+            exit.write(AppExit::Success);
+        }
+    }
+    // I / Tab toggle the inventory while alive.
+    if !sim.0.game_over && (keys.just_pressed(KeyCode::KeyI) || keys.just_pressed(KeyCode::Tab)) {
+        inv.0 = !inv.0;
+    }
+    // Restart from the dead screen.
+    if sim.0.game_over && keys.just_pressed(KeyCode::KeyR) {
+        sim.0 = new_world(run.level, run.seed, &content.0);
+    }
+    paused.0 = inv.0;
 }
 
 /// Device input → `Command` stream → `World::apply`. Resolves the aim latch

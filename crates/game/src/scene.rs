@@ -715,7 +715,7 @@ fn enemy_shape(id: &str) -> (Color, f32, f32) {
     }
 }
 
-fn rarity_color(r: Rarity) -> Color {
+pub(crate) fn rarity_color(r: Rarity) -> Color {
     match r {
         Rarity::Basic => Color::srgb(0.70, 0.70, 0.70),
         Rarity::Common => Color::srgb(0.45, 0.70, 1.00),
