@@ -1577,7 +1577,6 @@ dependencies = [
  "bigbox-procgen",
  "clap",
  "egui-macroquad",
- "gilrs",
  "macroquad",
  "rand 0.8.6",
  "ron 0.8.1",

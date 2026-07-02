@@ -1,12 +1,16 @@
 //! Input layer: turn raw devices (keyboard, mouse, gamepad) into gameplay
 //! intent. The aim-source latch lives here as `AimState` — the one piece of
 //! per-frame input state that carries across frames — kept pure (it takes the
-//! mouse position as an argument rather than reading the macroquad global) so
-//! the mouse-vs-pad switching logic is unit-testable headlessly.
+//! mouse position + ground hit as arguments rather than reading engine globals)
+//! so the mouse-vs-pad switching logic is unit-testable headlessly.
+//!
+//! Bevy port: `AimState` is a `Resource`; the device reads (`collect_commands`)
+//! take Bevy's `ButtonInput` handles + a pre-accumulated wheel delta so the
+//! command-building stays a plain function the `player_input` system feeds.
 
 use crate::pad::PadInput;
 use bb_game::{Command, Player};
-use macroquad::prelude::*;
+use bevy::prelude::*;
 
 /// Which device currently drives aim. The right stick switches to `Pad` (and
 /// the last direction is held when the stick re-centers); only actual mouse
@@ -24,12 +28,15 @@ pub struct AimFrame {
     /// Normalized aim direction in tile-space, or `None` when nothing aims.
     pub dir: Option<(f32, f32)>,
     /// World-space point the crosshair marks — the mouse ground-hit, or a
-    /// point ahead of the player when aiming on the stick.
+    /// point ahead of the player when aiming on the stick. Consumed by the
+    /// crosshair render in Phase 3; unread until then.
+    #[allow(dead_code)]
     pub hit: Option<Vec3>,
 }
 
-/// The mouse-vs-pad aim latch plus the held heading. Carried across frames by
-/// the main loop; one `update` per frame produces that frame's `AimFrame`.
+/// The mouse-vs-pad aim latch plus the held heading. A Bevy resource; one
+/// `update` per frame (in `player_input`) produces that frame's `AimFrame`.
+#[derive(Resource)]
 pub struct AimState {
     source: AimSource,
     /// Last pad-aim direction, held when the right stick re-centers.
@@ -44,6 +51,13 @@ impl AimState {
             held: None,
             prev_mouse: mouse_pos,
         }
+    }
+
+    /// Last cursor position the latch saw — used when the cursor leaves the
+    /// window (`cursor_position()` is `None`) so the absence doesn't read as
+    /// movement and yank the aim source back to the mouse.
+    pub fn last_mouse(&self) -> (f32, f32) {
+        self.prev_mouse
     }
 
     /// Advance the latch one frame. `mouse_pos` is this frame's cursor position
@@ -86,7 +100,7 @@ impl AimState {
         // the stick, else the mouse hit.
         let hit = match self.source {
             AimSource::Pad => {
-                dir.map(|(ax, ay)| vec3(player.x + ax * 6.0, 0.0, player.y + ay * 6.0))
+                dir.map(|(ax, ay)| Vec3::new(player.x + ax * 6.0, 0.0, player.y + ay * 6.0))
             }
             AimSource::Mouse => mouse_hit,
         };
@@ -120,20 +134,27 @@ fn aim_direction(p: &Player, hit: Option<Vec3>) -> Option<(f32, f32)> {
     }
 }
 
-/// Collect this frame's `Command`s from the resolved aim plus live device
-/// state (gamepad, mouse buttons, keyboard).
-pub fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
+/// Build this frame's `Command`s from the resolved aim plus live device state.
+/// Reads Bevy input handles directly; `wheel_y` is the per-frame accumulated
+/// `MouseWheel` delta (the system reads the event stream and sums it).
+pub fn collect_commands(
+    aim: Option<(f32, f32)>,
+    pad: &PadInput,
+    keys: &ButtonInput<KeyCode>,
+    mouse_buttons: &ButtonInput<MouseButton>,
+    wheel_y: f32,
+) -> Vec<Command> {
     let mut cmds = Vec::new();
 
     // Movement: the gamepad left stick (analog) takes priority; else WASD/arrows.
-    if let Some((dx, dy)) = pad.move_dir.or_else(keyboard_move) {
+    if let Some((dx, dy)) = pad.move_dir.or_else(|| keyboard_move(keys)) {
         cmds.push(Command::Move { dx, dy });
     }
 
     // Fire — continuous while the right trigger, LMB, or space is held. World
     // enforces the cooldown.
     let fire_held =
-        pad.fire || is_mouse_button_down(MouseButton::Left) || is_key_down(KeyCode::Space);
+        pad.fire || mouse_buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::Space);
     if fire_held && let Some((adx, ady)) = aim {
         cmds.push(Command::Fire { dx: adx, dy: ady });
     }
@@ -142,20 +163,19 @@ pub fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
     // Q/E and the mouse wheel cycle. The World no-ops out-of-range slots and
     // single-weapon cycles, so we can emit freely.
     for (key, slot) in [
-        (KeyCode::Key1, 0),
-        (KeyCode::Key2, 1),
-        (KeyCode::Key3, 2),
-        (KeyCode::Key4, 3),
+        (KeyCode::Digit1, 0),
+        (KeyCode::Digit2, 1),
+        (KeyCode::Digit3, 2),
+        (KeyCode::Digit4, 3),
     ] {
-        if is_key_pressed(key) {
+        if keys.just_pressed(key) {
             cmds.push(Command::SwitchWeapon { slot });
         }
     }
-    let wheel = mouse_wheel().1;
-    if is_key_pressed(KeyCode::E) || wheel < 0.0 || pad.cycle_next {
+    if keys.just_pressed(KeyCode::KeyE) || wheel_y < 0.0 || pad.cycle_next {
         cmds.push(Command::CycleWeapon { dir: 1 });
     }
-    if is_key_pressed(KeyCode::Q) || wheel > 0.0 || pad.cycle_prev {
+    if keys.just_pressed(KeyCode::KeyQ) || wheel_y > 0.0 || pad.cycle_prev {
         cmds.push(Command::CycleWeapon { dir: -1 });
     }
 
@@ -164,19 +184,19 @@ pub fn collect_input(aim: Option<(f32, f32)>, pad: &PadInput) -> Vec<Command> {
 
 /// Normalized WASD/arrow movement direction, or `None` if no key is held. `dy`
 /// is along world Z, so W (−dy) moves "up"/north on screen.
-fn keyboard_move() -> Option<(f32, f32)> {
+fn keyboard_move(keys: &ButtonInput<KeyCode>) -> Option<(f32, f32)> {
     let mut dx = 0.0_f32;
     let mut dy = 0.0_f32;
-    if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
         dy -= 1.0;
     }
-    if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) {
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
         dy += 1.0;
     }
-    if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
         dx -= 1.0;
     }
-    if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
         dx += 1.0;
     }
     if dx != 0.0 || dy != 0.0 {
@@ -246,7 +266,7 @@ mod tests {
     fn mouse_movement_reclaims_source() {
         let mut s = AimState::new((0.0, 0.0));
         s.update(&player(), &pad(Some((1.0, 0.0)), None), (0.0, 0.0), None);
-        let hit = vec3(13.0, 0.0, 14.0); // dx=3, dz=4 → (0.6, 0.8)
+        let hit = Vec3::new(13.0, 0.0, 14.0); // dx=3, dz=4 → (0.6, 0.8)
         let f = s.update(&player(), &pad(None, None), (50.0, 50.0), Some(hit));
         assert_eq!(s.source, AimSource::Mouse);
         let (dx, dy) = f.dir.unwrap();

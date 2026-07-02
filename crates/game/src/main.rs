@@ -20,7 +20,9 @@
 
 use bb_game::{Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
+use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 // Inherited macroquad modules — not yet wired into the Bevy app. They stay
 // compiled (so they don't bitrot) until their porting phase; `allow(dead_code)`
@@ -29,9 +31,7 @@ use bevy::prelude::*;
 #[cfg(feature = "debug")]
 #[allow(dead_code)]
 mod debug;
-#[allow(dead_code)]
 mod input;
-#[allow(dead_code)]
 mod pad;
 #[allow(dead_code)]
 mod render;
@@ -229,7 +229,8 @@ fn main() {
         .insert_resource(Paused(false))
         .add_systems(Startup, setup)
         .configure_sets(Update, SimSet.run_if(not_paused))
-        .add_systems(Update, tick_world.in_set(SimSet))
+        // Input feeds the command stream, then the world ticks — ordered.
+        .add_systems(Update, (player_input, tick_world).chain().in_set(SimSet))
         .add_systems(Update, camera_follow.after(SimSet))
         .add_systems(Update, report_sim)
         .run();
@@ -250,6 +251,9 @@ fn setup(mut commands: Commands, run: Res<RunConfig>) {
 
     commands.insert_resource(GameContent(content));
     commands.insert_resource(Sim(world));
+    // The mouse-vs-pad aim latch, carried across frames. Seeded at origin; the
+    // first real cursor position reclaims the mouse source harmlessly.
+    commands.insert_resource(input::AimState::new((0.0, 0.0)));
 }
 
 /// Run condition: sim + camera advance only while unpaused.
@@ -257,8 +261,61 @@ fn not_paused(paused: Res<Paused>) -> bool {
     !paused.0
 }
 
-/// One `World::tick` per frame. Input drainage lands in Phase 2; for now the
-/// world advances on `dt` alone (waves, enemy steering, projectiles).
+/// Device input → `Command` stream → `World::apply`. Resolves the aim latch
+/// (mouse vs. pad), then builds and applies this frame's commands. Ordered
+/// before `tick_world` so the tick sees this frame's intent. Runs in `SimSet`,
+/// so the inventory-pause gate suspends input alongside the tick.
+#[allow(clippy::too_many_arguments)]
+fn player_input(
+    mut sim: ResMut<Sim>,
+    mut aim: ResMut<input::AimState>,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut wheel: MessageReader<MouseWheel>,
+    gamepads: Query<&Gamepad>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<FollowCam>>,
+) {
+    let dt = time.delta_secs();
+    let pad = pad::read_pad(&gamepads, sim.0.tunables.stick_deadzone);
+
+    // Cursor → ground-plane hit for mouse aim. `None` when the cursor is outside
+    // the window; hold the last position so that absence doesn't read as motion.
+    let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+    let mouse_hit = match (cursor, cameras.iter().next()) {
+        (Some(c), Some((cam, xf))) => ground_hit(cam, xf, c),
+        _ => None,
+    };
+    let mouse_pos = cursor.map(|c| (c.x, c.y)).unwrap_or_else(|| aim.last_mouse());
+
+    let frame = aim.update(&sim.0.player, &pad, mouse_pos, mouse_hit);
+
+    // Accumulate this frame's wheel delta (event-based in Bevy).
+    let wheel_y: f32 = wheel.read().map(|e| e.y).sum();
+
+    for cmd in input::collect_commands(frame.dir, &pad, &keys, &mouse_buttons, wheel_y) {
+        sim.0.apply(cmd, dt);
+    }
+}
+
+/// Cast a ray from the camera through the cursor and intersect the ground plane
+/// (`Y = 0`). Uses Bevy's `viewport_to_world`; guards a ray parallel to / below
+/// the plane. Returns the world-space hit point.
+fn ground_hit(camera: &Camera, cam_xf: &GlobalTransform, cursor: Vec2) -> Option<Vec3> {
+    let ray = camera.viewport_to_world(cam_xf, cursor).ok()?;
+    if ray.direction.y.abs() < 1e-6 {
+        return None;
+    }
+    let t = -ray.origin.y / ray.direction.y;
+    if t <= 0.0 {
+        return None;
+    }
+    Some(ray.origin + ray.direction * t)
+}
+
+/// One `World::tick` per frame, after `player_input` has drained the command
+/// stream. Advances waves, enemy steering, projectiles, loot on `dt`.
 fn tick_world(mut sim: ResMut<Sim>, content: Res<GameContent>, time: Res<Time>) {
     sim.0.tick(time.delta_secs(), &content.0);
 }

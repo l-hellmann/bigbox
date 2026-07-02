@@ -29,9 +29,6 @@ egui-macroquad = { version = "0.17", optional = true }
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
-# Gamepad input (twin-stick). Desktop-native only — the whole target is native
-# now, so no cfg split.
-gilrs = "0.11"
 
 [features]
 # Compiles the local-dev tooling: the in-game tuning overlay (egui), tunable
