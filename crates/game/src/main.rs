@@ -20,8 +20,8 @@
 
 use bb_game::{Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::MouseWheel;
-use bevy::log::info;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -34,8 +34,11 @@ use bevy::window::PrimaryWindow;
 mod debug;
 mod input;
 mod pad;
+// Inherited macroquad render/HUD — its 2D HUD + debug viz are ported in Phases
+// 4/5; the 3D scene has moved to `scene` (Bevy). Kept as reference until then.
 #[allow(dead_code)]
 mod render;
+mod scene;
 #[allow(dead_code)]
 mod ui;
 
@@ -203,6 +206,16 @@ struct RunConfig {
 #[derive(Resource)]
 struct Paused(bool);
 
+/// This frame's resolved aim, shared from `player_input` to the renderer. `yaw`
+/// faces the player figure at the cursor/stick; `hit` is the ground point the
+/// aim line/crosshair marks. `yaw` holds its last value when aim is momentarily
+/// absent so the figure doesn't snap to north.
+#[derive(Resource, Default)]
+struct Aim {
+    yaw: f32,
+    hit: Option<Vec3>,
+}
+
 /// Marks the follow-camera so `camera_follow` can re-target it each frame.
 #[derive(Component)]
 struct FollowCam;
@@ -228,12 +241,21 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
         .insert_resource(RunConfig { level, seed })
         .insert_resource(Paused(false))
-        .add_systems(Startup, setup)
+        .init_resource::<Aim>()
+        // World + camera exist first, then render assets, then the static map
+        // geometry (which reads both).
+        .add_systems(
+            Startup,
+            (setup, scene::setup_render_assets, scene::spawn_map).chain(),
+        )
         .configure_sets(Update, SimSet.run_if(not_paused))
         // Input feeds the command stream, then the world ticks — ordered.
         .add_systems(Update, (player_input, tick_world).chain().in_set(SimSet))
-        .add_systems(Update, camera_follow.after(SimSet))
-        .add_systems(Update, report_sim)
+        // Renderer reads post-tick state: reconcile entities + follow the cam.
+        .add_systems(
+            Update,
+            (camera_follow, scene::sync_dynamic, scene::draw_aim).after(SimSet),
+        )
         .run();
 }
 
@@ -247,6 +269,9 @@ fn setup(mut commands: Commands, run: Res<RunConfig>) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(eye).looking_at(target, Vec3::Y),
+        // Flat, unfiltered color — the boxy materials are unlit, so reproduce
+        // macroquad's look with no tonemapping curve applied.
+        Tonemapping::None,
         FollowCam,
     ));
 
@@ -269,7 +294,8 @@ fn not_paused(paused: Res<Paused>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn player_input(
     mut sim: ResMut<Sim>,
-    mut aim: ResMut<input::AimState>,
+    mut aim_state: ResMut<input::AimState>,
+    mut aim: ResMut<Aim>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -288,9 +314,18 @@ fn player_input(
         (Some(c), Some((cam, xf))) => ground_hit(cam, xf, c),
         _ => None,
     };
-    let mouse_pos = cursor.map(|c| (c.x, c.y)).unwrap_or_else(|| aim.last_mouse());
+    let mouse_pos = cursor
+        .map(|c| (c.x, c.y))
+        .unwrap_or_else(|| aim_state.last_mouse());
 
-    let frame = aim.update(&sim.0.player, &pad, mouse_pos, mouse_hit);
+    let frame = aim_state.update(&sim.0.player, &pad, mouse_pos, mouse_hit);
+
+    // Publish the resolved aim to the renderer: face the figure, mark the hit.
+    // Keep the last yaw when aim is momentarily absent (no snap to north).
+    if let Some((dx, dy)) = frame.dir {
+        aim.yaw = dx.atan2(dy);
+    }
+    aim.hit = frame.hit;
 
     // Accumulate this frame's wheel delta (event-based in Bevy).
     let wheel_y: f32 = wheel.read().map(|e| e.y).sum();
@@ -338,19 +373,4 @@ fn camera_pose(px: f32, py: f32) -> (Vec3, Vec3) {
     let target = Vec3::new(px, 0.0, py);
     let eye = target + Vec3::new(0.0, CAMERA_HEIGHT, CAMERA_BACK);
     (eye, target)
-}
-
-/// Transitional sanity check: log the enemy count roughly once a second so we
-/// can confirm the world is ticking before any geometry is drawn (Phase 3).
-fn report_sim(sim: Res<Sim>, time: Res<Time>, mut acc: Local<f32>) {
-    *acc += time.delta_secs();
-    if *acc >= 1.0 {
-        *acc = 0.0;
-        info!(
-            "sim tick — enemies: {}, projectiles: {}, player_life: {:.0}",
-            sim.0.enemies.len(),
-            sim.0.projectiles.len(),
-            sim.0.player.current_life,
-        );
-    }
 }
