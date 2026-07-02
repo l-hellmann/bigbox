@@ -21,6 +21,7 @@
 use bb_game::{Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
 use bevy::input::mouse::MouseWheel;
+use bevy::log::info;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -345,7 +346,7 @@ fn report_sim(sim: Res<Sim>, time: Res<Time>, mut acc: Local<f32>) {
     *acc += time.delta_secs();
     if *acc >= 1.0 {
         *acc = 0.0;
-        println!(
+        info!(
             "sim tick — enemies: {}, projectiles: {}, player_life: {:.0}",
             sim.0.enemies.len(),
             sim.0.projectiles.len(),

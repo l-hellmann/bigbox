@@ -27,6 +27,10 @@ insta = "1"
 bevy = { version = "0.19", default-features = false, features = [
     "std",
     "multi_threaded",
+    # `LogPlugin` (tracing subscriber) is gated on this in `DefaultPlugins`.
+    # Without it Bevy's own warnings/errors are swallowed and `info!`/`warn!`
+    # link to nothing — so it's on even though we use `default-features = false`.
+    "bevy_log",
     "bevy_asset",
     "bevy_state",
     "bevy_render",
