@@ -35,13 +35,7 @@ mod debug;
 mod hud;
 mod input;
 mod pad;
-// Inherited macroquad render/HUD — its 2D HUD + debug viz are ported in Phases
-// 4/5; the 3D scene has moved to `scene` (Bevy). Kept as reference until then.
-#[allow(dead_code)]
-mod render;
 mod scene;
-#[allow(dead_code)]
-mod ui;
 
 // Re-export the gamepad diagnostic type so `crate::PadDiag` (used by the debug
 // overlay) keeps resolving from the crate root.
