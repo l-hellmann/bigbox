@@ -7,4 +7,5 @@ Credit is given here as a courtesy.
 These are CC0 placeholder art (see CLAUDE.md "Custom art is out of scope").
 Each character-{a..r}.glb is a rigged, node-animated blocky humanoid sharing a
 common animation set (idle / walk / sprint / holding-both-shoot / attack / die /
-…); textures live in Textures/texture-{a..r}.png.
+…); textures live in textures/texture-{a..r}.png (the glbs' embedded URIs were
+patched from the pack's original `Textures/` to match this lowercase dir).
