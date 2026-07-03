@@ -297,6 +297,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                character::build_char_graphs,
                 character::attach_char_animation,
                 character::drive_char_animation,
             ),
@@ -356,13 +357,21 @@ fn register_gltf_types(app: &mut App) {
         .register_type::<Mesh3d>()
         .register_type::<MeshMaterial3d<StandardMaterial>>()
         .register_type::<bevy::camera::primitives::Aabb>()
+        .register_type::<bevy::camera::visibility::NoFrustumCulling>()
         .register_type::<GltfExtras>()
         .register_type::<GltfSceneName>()
         .register_type::<GltfSceneExtras>()
         .register_type::<GltfMeshExtras>()
         .register_type::<GltfMeshName>()
         .register_type::<GltfMaterialExtras>()
-        .register_type::<GltfMaterialName>();
+        .register_type::<GltfMaterialName>()
+        // Skinned / morph-target components — not baked by the current
+        // node-animated placeholder glbs, but a higher-fidelity (skinned) final
+        // character would bake these, and the reflection spawner would panic
+        // without them. Registered up front so replacement art drops in.
+        .register_type::<bevy::mesh::skinning::SkinnedMesh>()
+        .register_type::<bevy::mesh::morph::MorphWeights>()
+        .register_type::<bevy::mesh::morph::MeshMorphWeights>();
 }
 
 /// Startup: load content, build the world, spawn the follow-camera over the

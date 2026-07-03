@@ -427,7 +427,7 @@ pub fn sync_enemies(
             continue;
         };
         seen.insert(view.0);
-        let (_, scale) = character::enemy_visual(enemy_id(&content, e));
+        let scale = character::enemy_spec(enemy_id(&content, e)).scale;
         let pos = Vec2::new(e.x, e.y);
         *tf = character::char_transform(Vec3::new(e.x, 0.0, e.y), e.facing, scale);
         let speed = (pos - track.last).length() / dt;
@@ -445,12 +445,11 @@ pub fn sync_enemies(
         if seen.contains(&e.id) {
             continue;
         }
-        let (letter, scale) = character::enemy_visual(enemy_id(&content, e));
+        let spec = character::enemy_spec(enemy_id(&content, e));
         let ent = character::spawn_character(
             &mut commands,
             &chars,
-            letter,
-            scale,
+            spec,
             Vec3::new(e.x, 0.0, e.y),
             e.facing,
             AnimClip::Idle,
@@ -573,13 +572,10 @@ pub fn sync_player(
     let dt = time.delta_secs().max(1e-4);
     let speed = (p.vx * p.vx + p.vy * p.vy).sqrt();
     let state = character::player_anim_state(&mut anim, &sim, dt, speed);
+    let spec = character::player_spec();
 
     if let Ok((mut tf, mut model)) = view.single_mut() {
-        *tf = character::char_transform(
-            Vec3::new(p.x, 0.0, p.y),
-            aim.yaw,
-            character::PLAYER_SCALE,
-        );
+        *tf = character::char_transform(Vec3::new(p.x, 0.0, p.y), aim.yaw, spec.scale);
         model.state = state;
         return;
     }
@@ -588,8 +584,7 @@ pub fn sync_player(
     let ent = character::spawn_character(
         &mut commands,
         &chars,
-        character::PLAYER_CHAR,
-        character::PLAYER_SCALE,
+        spec,
         Vec3::new(p.x, 0.0, p.y),
         aim.yaw,
         state,
@@ -756,7 +751,7 @@ fn health_bar(content: &GameContent, e: &EnemyInstance) -> Option<HealthBar> {
     if max <= 0.0 || cur >= max {
         return None;
     }
-    let (_, scale) = character::enemy_visual(enemy_id(content, e));
+    let scale = character::enemy_spec(enemy_id(content, e)).scale;
     let frac = (cur / max).clamp(0.0, 1.0);
     let bar_w = (character::char_height(scale) * 0.9).max(0.5);
     Some(HealthBar {
