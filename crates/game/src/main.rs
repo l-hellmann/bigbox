@@ -17,7 +17,6 @@
 
 use bb_game::{Command, Content, World};
 use bb_procgen::{ArenaParams, Map, MapParams, generate_arena, generate_bsp};
-use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -25,6 +24,7 @@ use bevy::window::PrimaryWindow;
 // Debug tuning overlay (bevy_egui) — dev-only, behind `--features debug`.
 #[cfg(feature = "debug")]
 mod debug;
+mod character;
 mod hud;
 mod input;
 mod pad;
@@ -221,16 +221,31 @@ fn main() {
     let (level, seed) = resolve_run();
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "bigbox".into(),
-                resolution: (1280, 720).into(),
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "bigbox".into(),
+                    resolution: (1280, 720).into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            // Assets live in the game crate's `assets/` dir (models, textures).
+            // Point the server there via the compile-time crate path so it
+            // resolves regardless of the working dir `cargo run` uses; enable
+            // hot-reload so model/texture edits refresh live in dev.
+            // (Packaging will later ship an `assets/` folder beside the binary.)
+            .set(bevy::asset::AssetPlugin {
+                file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").to_string(),
+                watch_for_changes_override: Some(true),
                 ..default()
             }),
-            ..default()
-        }))
-        // The old macroquad clear color.
+    )
+        // Dark clear color; the scene reads off the directional light + ambient.
         .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.03)))
+        .init_resource::<character::CharAssets>()
+        .init_resource::<character::PlayerAnim>()
         .insert_resource(RunConfig { level, seed })
         .insert_resource(Paused(false))
         .init_resource::<Aim>()
@@ -244,6 +259,7 @@ fn main() {
             (
                 (setup, scene::setup_render_assets, scene::spawn_map).chain(),
                 hud::setup_ui,
+                character::setup_characters,
             ),
         )
         .configure_sets(Update, SimSet.run_if(not_paused))
@@ -274,6 +290,16 @@ fn main() {
                 hud::inventory_hover,
             )
                 .after(SimSet),
+        )
+        // Character animation: wire each freshly-loaded model's AnimationPlayer
+        // to its graph, then apply the desired clip. Not gated on the sim pause
+        // (models should keep animating while the inventory is open).
+        .add_systems(
+            Update,
+            (
+                character::attach_char_animation,
+                character::drive_char_animation,
+            ),
         );
 
     // Debug tuning overlay (bevy_egui) + 3D debug viz. Panel/entity-stat systems
@@ -294,11 +320,49 @@ fn main() {
         );
     }
 
+    register_gltf_types(&mut app);
+
     // Dev-only headless render validation: capture a screenshot then exit.
     #[cfg(feature = "screenshot")]
     app.add_systems(Update, screenshot_once);
 
     app.run();
+}
+
+/// Register the component types the GLTF loader bakes into a character's
+/// `WorldAsset`. Bevy 0.19 spawns GLTF scenes by reflecting each baked component
+/// out of the loaded sub-world and into the app world, which requires every such
+/// type to be in the `AppTypeRegistry`. With our trimmed (`default-features =
+/// false`) Bevy, the owning plugins don't auto-register these, so the spawner
+/// panics on the first unregistered one — we register them here.
+fn register_gltf_types(app: &mut App) {
+    use bevy::animation::{AnimatedBy, AnimationPlayer, AnimationTargetId};
+    use bevy::gltf::{
+        GltfExtras, GltfMaterialExtras, GltfMaterialName, GltfMeshExtras, GltfMeshName,
+        GltfSceneExtras, GltfSceneName,
+    };
+    app.register_type::<AnimationPlayer>()
+        .register_type::<AnimatedBy>()
+        .register_type::<AnimationTargetId>()
+        .register_type::<Transform>()
+        .register_type::<bevy::transform::components::TransformTreeChanged>()
+        .register_type::<GlobalTransform>()
+        .register_type::<Name>()
+        .register_type::<Visibility>()
+        .register_type::<InheritedVisibility>()
+        .register_type::<ViewVisibility>()
+        .register_type::<ChildOf>()
+        .register_type::<Children>()
+        .register_type::<Mesh3d>()
+        .register_type::<MeshMaterial3d<StandardMaterial>>()
+        .register_type::<bevy::camera::primitives::Aabb>()
+        .register_type::<GltfExtras>()
+        .register_type::<GltfSceneName>()
+        .register_type::<GltfSceneExtras>()
+        .register_type::<GltfMeshExtras>()
+        .register_type::<GltfMeshName>()
+        .register_type::<GltfMaterialExtras>()
+        .register_type::<GltfMaterialName>();
 }
 
 /// Startup: load content, build the world, spawn the follow-camera over the
@@ -311,10 +375,26 @@ fn setup(mut commands: Commands, run: Res<RunConfig>) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(eye).looking_at(target, Vec3::Y),
-        // Flat, unfiltered color — the boxy materials are unlit, so reproduce
-        // macroquad's look with no tonemapping curve applied.
-        Tonemapping::None,
+        // Sky-tinted fill so faces turned away from the sun don't crush to black.
+        AmbientLight {
+            color: Color::srgb(0.75, 0.80, 0.95),
+            brightness: 350.0,
+            ..default()
+        },
         FollowCam,
+    ));
+
+    // Sun: an angled directional light casting shadows across the scene. Aimed
+    // down-and-across (not straight down) so the boxy walls/characters throw
+    // readable shadows.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 9_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 20.0, 0.0)
+            .looking_to(Vec3::new(-0.55, -1.0, -0.35), Vec3::Y),
     ));
 
     commands.insert_resource(GameContent(content));

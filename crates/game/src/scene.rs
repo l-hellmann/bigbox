@@ -18,7 +18,8 @@
 //! lighting/PBR epic is deferred. Shared mesh + material handles (via a
 //! color-keyed cache) let Bevy auto-batch, per the CLAUDE.md hot-path rule.
 
-use crate::{GameContent, Sim};
+use crate::character::{self, AnimClip, CharAssets, CharModel, PlayerAnim};
+use crate::{Aim, GameContent, Sim};
 use bb_core::Rarity;
 use bb_game::{EnemyInstance, LootDrop};
 use bb_procgen::{Map, Tile};
@@ -30,12 +31,6 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 /// How tall wall cubes stand, in world units (= tiles).
 const WALL_HEIGHT: f32 = 1.6;
-/// Player figure scale (≈ the old cube half-extent).
-const PLAYER_HALF: f32 = 0.35;
-/// Radians of walk-cycle phase per tile of ground distance covered. The phase is
-/// advanced per-figure by `distance_moved × WALK_FREQ` (see [`WalkCycle`]), so
-/// stride tracks actual motion and each figure animates independently.
-const WALK_FREQ: f32 = 6.0;
 /// How long a rocket's blast sphere stays on screen (seconds) — the render-side
 /// clock for the fading effect. The sim only emits the `ExplosionEvent`; the
 /// lifetime lives here so ephemeral visuals never touch replicated world state.
@@ -64,8 +59,8 @@ pub struct RenderAssets {
     floor_dark: Handle<StandardMaterial>,
 }
 
-/// Color-keyed unlit-material cache, shared across the spawn + sync systems so a
-/// given color mints exactly one `StandardMaterial` for the whole run.
+/// Color-keyed material cache, shared across the spawn + sync systems so a given
+/// color mints exactly one `StandardMaterial` for the whole run.
 #[derive(Resource, Default)]
 pub struct MatCache(HashMap<u32, Handle<StandardMaterial>>);
 
@@ -77,8 +72,10 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-    /// Shared unlit material for `color` (alpha < 1 → alpha-blended). Reused
-    /// across frames and entities so batching kicks in.
+    /// Shared **lit** PBR material for `color` (alpha < 1 → alpha-blended). Matte
+    /// (high roughness, non-metal) so the boxy walls/props read cleanly under the
+    /// scene's directional light. Reused across frames and entities so batching
+    /// kicks in.
     fn mat(&mut self, color: Color) -> Handle<StandardMaterial> {
         let s = color.to_srgba();
         let key = u32::from_le_bytes([
@@ -93,7 +90,8 @@ impl Painter<'_> {
             .or_insert_with(|| {
                 self.materials.add(StandardMaterial {
                     base_color: color,
-                    unlit: true,
+                    perceptual_roughness: 0.9,
+                    metallic: 0.0,
                     alpha_mode: if s.alpha < 1.0 {
                         AlphaMode::Blend
                     } else {
@@ -123,15 +121,16 @@ pub struct MapGeometry;
 #[derive(Component)]
 pub struct DynamicEntity;
 
-/// Marks a pooled enemy figure's parent, keyed by the stable `EnemyInstance.id`
-/// so the figure (parent + child cubes) persists across frames — only its
-/// `Transform` and limb swing update, no per-frame spawn/despawn.
+/// Marks a pooled enemy character's `SceneRoot`, keyed by the stable
+/// `EnemyInstance.id` so the GLTF model persists across frames — only its root
+/// `Transform` (position + heading) and animation state update, no per-frame
+/// spawn/despawn. The limb motion comes from the model's own walk clip.
 #[derive(Component)]
 pub struct EnemyView(u64);
 
-/// Marks the single persistent player figure. Like [`EnemyView`] it spawns once
-/// and thereafter only its root `Transform` (position + aim yaw) and limb swing
-/// update each frame — no despawn/respawn of the ~11-cube hierarchy.
+/// Marks the single persistent player character. Like [`EnemyView`] it spawns
+/// once; thereafter only its `Transform` (position + aim yaw) and animation
+/// state update.
 #[derive(Component)]
 pub struct PlayerView;
 
@@ -159,29 +158,12 @@ pub struct ExplosionEffect {
     radius: f32,
 }
 
-/// Per-figure walk-cycle phase, advanced by ground distance moved so the stride
-/// tracks real motion (planted feet when idle) and each figure animates on its
-/// own clock rather than off absolute world coordinates.
+/// Tracks a character's world position across frames so the reconcile can derive
+/// its ground speed (for the idle↔walk animation choice) without the sim
+/// exposing per-enemy velocity.
 #[derive(Component)]
-pub struct WalkCycle {
-    phase: f32,
+pub struct MoveTracker {
     last: Vec2,
-}
-
-/// Advance a figure's walk phase by the distance it moved to `pos` and return
-/// the current swing (`sin(phase)`). Shared by the enemy and player reconcilers.
-fn advance_walk(cycle: &mut WalkCycle, pos: Vec2) -> f32 {
-    let dist = (pos - cycle.last).length();
-    cycle.phase += dist * WALK_FREQ;
-    cycle.last = pos;
-    cycle.phase.sin()
-}
-
-/// A swinging limb (leg/arm) of a box figure. `amp_z` is the signed fore/aft
-/// amplitude; the walk-bob sets local `translation.z = amp_z * sin(phase)`.
-#[derive(Component)]
-pub struct Limb {
-    amp_z: f32,
 }
 
 /// A pooled projectile cube. Reused by index across frames.
@@ -212,7 +194,8 @@ pub fn setup_render_assets(
         materials.add(StandardMaterial {
             base_color: tint,
             base_color_texture: Some(grain.clone()),
-            unlit: true,
+            perceptual_roughness: 0.95,
+            metallic: 0.0,
             ..default()
         })
     };
@@ -417,81 +400,78 @@ fn spawn_rubble(
 
 // ---- Per-frame: dynamic entities ----------------------------------------
 
-/// Pooled reconcile for the **swarm** — enemy box figures keyed by stable id.
-/// Figures persist across frames; only `Transform` (position + yaw) and the
-/// limb walk-swing update. New ids spawn a figure; departed ids despawn theirs.
-/// Runs after the tick + camera-follow so it reads post-tick state.
+/// Pooled reconcile for the **swarm** — enemy GLTF characters keyed by stable
+/// id. Models persist across frames; only the root `Transform` (position +
+/// heading) and the animation state (idle vs walk, from frame-to-frame speed)
+/// update. New ids spawn a model; departed ids despawn theirs. Limb motion comes
+/// from the model's own clips (see [`character`]). Runs after the tick +
+/// camera-follow so it reads post-tick state.
 pub fn sync_enemies(
     mut commands: Commands,
     sim: Res<Sim>,
     content: Res<GameContent>,
-    assets: Res<RenderAssets>,
-    mut cache: ResMut<MatCache>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut parents: Query<(Entity, &EnemyView, &mut Transform, &mut WalkCycle, &Children)>,
-    mut limbs: Query<(&mut Transform, &Limb), (Without<EnemyView>, Without<PlayerView>)>,
+    time: Res<Time>,
+    chars: Res<CharAssets>,
+    mut views: Query<(Entity, &EnemyView, &mut Transform, &mut CharModel, &mut MoveTracker)>,
 ) {
     let world = &sim.0;
+    let dt = time.delta_secs().max(1e-4);
+    let player_pos = Vec2::new(world.player.x, world.player.y);
     let live: HashMap<u64, &EnemyInstance> = world.enemies.iter().map(|e| (e.id, e)).collect();
 
-    // Update surviving figures in place; despawn those whose enemy is gone.
+    // Update surviving models in place; despawn those whose enemy is gone.
     let mut seen: HashSet<u64> = HashSet::default();
-    for (ent, view, mut tf, mut cycle, children) in &mut parents {
+    for (ent, view, mut tf, mut model, mut track) in &mut views {
         let Some(e) = live.get(&view.0) else {
             commands.entity(ent).despawn();
             continue;
         };
         seen.insert(view.0);
-        *tf = Transform::from_xyz(e.x, 0.0, e.y).with_rotation(Quat::from_rotation_y(e.facing));
-        let swing = advance_walk(&mut cycle, Vec2::new(e.x, e.y));
-        for &c in children {
-            if let Ok((mut ct, limb)) = limbs.get_mut(c) {
-                ct.translation.z = limb.amp_z * swing;
-            }
-        }
+        let (_, scale) = character::enemy_visual(enemy_id(&content, e));
+        let pos = Vec2::new(e.x, e.y);
+        *tf = character::char_transform(Vec3::new(e.x, 0.0, e.y), e.facing, scale);
+        let speed = (pos - track.last).length() / dt;
+        track.last = pos;
+        // Swing at the player when awake and in melee range, else idle/walk.
+        model.state = if e.awake && (pos - player_pos).length() < character::ATTACK_RANGE {
+            AnimClip::Attack
+        } else {
+            character::locomotion(speed, false)
+        };
     }
 
-    // Spawn figures for enemies that don't have one yet.
-    let mut painter = Painter {
-        cache: &mut cache,
-        materials: &mut materials,
-    };
+    // Spawn models for enemies that don't have one yet.
     for e in &world.enemies {
         if seen.contains(&e.id) {
             continue;
         }
-        let id = content
-            .0
-            .enemies
-            .get(e.archetype)
-            .map(|a| a.id.as_str())
-            .unwrap_or("");
-        let (color, scale, width) = enemy_shape(id);
-        let spec = FigureSpec {
-            scale,
-            width,
-            body: color,
-            head: lighten(color, 0.12),
-            accent: Color::srgb(0.90, 0.96, 0.45),
-            phase: 0.0,
-            gun: false,
-        };
-        let ent = spawn_figure(
+        let (letter, scale) = character::enemy_visual(enemy_id(&content, e));
+        let ent = character::spawn_character(
             &mut commands,
-            &assets,
-            &mut painter,
+            &chars,
+            letter,
+            scale,
             Vec3::new(e.x, 0.0, e.y),
             e.facing,
-            &spec,
+            AnimClip::Idle,
         );
         commands.entity(ent).insert((
             EnemyView(e.id),
-            WalkCycle {
-                phase: 0.0,
+            MoveTracker {
                 last: Vec2::new(e.x, e.y),
             },
         ));
     }
+}
+
+/// The content archetype id string for an enemy, or `""` if out of range.
+fn enemy_id<'a>(content: &'a GameContent, e: &EnemyInstance) -> &'a str {
+    content
+        .0
+        .enemies
+        .get(e.archetype)
+        .map(|a| a.id.as_str())
+        .unwrap_or("")
 }
 
 /// Pooled reconcile for projectiles (swarm-heavy). Reuses a `Vec<Entity>` by
@@ -577,61 +557,44 @@ pub fn sync_misc(
     }
 }
 
-/// Pooled reconcile for the single player figure: spawn the ~11-cube hierarchy
-/// once, then only update its root `Transform` (position + aim yaw) and limb
-/// swing each frame — the same in-place pattern the swarm uses, replacing the
-/// old despawn-all/respawn that rebuilt the whole figure every frame.
+/// Pooled reconcile for the single player character: spawn the GLTF model once,
+/// then each frame update its `Transform` (position + aim yaw) and animation
+/// state (walk when moving, gun-hold when still, shoot on the fire rising edge).
 pub fn sync_player(
     mut commands: Commands,
     sim: Res<Sim>,
-    assets: Res<RenderAssets>,
-    aim: Res<crate::Aim>,
-    mut cache: ResMut<MatCache>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut fig: Query<(&mut Transform, &mut WalkCycle, &Children), With<PlayerView>>,
-    mut limbs: Query<(&mut Transform, &Limb), (Without<PlayerView>, Without<EnemyView>)>,
+    aim: Res<Aim>,
+    time: Res<Time>,
+    chars: Res<CharAssets>,
+    mut anim: ResMut<PlayerAnim>,
+    mut view: Query<(&mut Transform, &mut CharModel), With<PlayerView>>,
 ) {
     let p = &sim.0.player;
-    if let Ok((mut tf, mut cycle, children)) = fig.single_mut() {
-        *tf = Transform::from_xyz(p.x, 0.0, p.y).with_rotation(Quat::from_rotation_y(aim.yaw));
-        let swing = advance_walk(&mut cycle, Vec2::new(p.x, p.y));
-        for &c in children {
-            if let Ok((mut ct, limb)) = limbs.get_mut(c) {
-                ct.translation.z = limb.amp_z * swing;
-            }
-        }
+    let dt = time.delta_secs().max(1e-4);
+    let speed = (p.vx * p.vx + p.vy * p.vy).sqrt();
+    let state = character::player_anim_state(&mut anim, &sim, dt, speed);
+
+    if let Ok((mut tf, mut model)) = view.single_mut() {
+        *tf = character::char_transform(
+            Vec3::new(p.x, 0.0, p.y),
+            aim.yaw,
+            character::PLAYER_SCALE,
+        );
+        model.state = state;
         return;
     }
 
-    // First frame (or after a restart cleared it): build the figure once.
-    let mut painter = Painter {
-        cache: &mut cache,
-        materials: &mut materials,
-    };
-    let spec = FigureSpec {
-        scale: PLAYER_HALF,
-        width: 1.0,
-        body: Color::srgb(0.32, 0.72, 0.38),
-        head: Color::srgb(0.40, 0.85, 0.46),
-        accent: Color::srgb(0.85, 1.00, 0.55),
-        phase: 0.0,
-        gun: true,
-    };
-    let ent = spawn_figure(
+    // First frame (or after a restart cleared it): spawn the model once.
+    let ent = character::spawn_character(
         &mut commands,
-        &assets,
-        &mut painter,
+        &chars,
+        character::PLAYER_CHAR,
+        character::PLAYER_SCALE,
         Vec3::new(p.x, 0.0, p.y),
         aim.yaw,
-        &spec,
+        state,
     );
-    commands.entity(ent).insert((
-        PlayerView,
-        WalkCycle {
-            phase: 0.0,
-            last: Vec2::new(p.x, p.y),
-        },
-    ));
+    commands.entity(ent).insert(PlayerView);
 }
 
 /// Pooled reconcile for enemy health bars, keyed by enemy id. A bar persists
@@ -769,100 +732,6 @@ pub fn draw_aim(sim: Res<Sim>, aim: Res<crate::Aim>, mut gizmos: Gizmos) {
     );
 }
 
-/// A boxy humanoid built from stacked cube parts. `ground` = feet position,
-/// `yaw` faces the heading (front = local +Z). Parent carries the yaw; children
-/// are local-space so world-aligned overlays (health bars) stay outside it.
-struct FigureSpec {
-    scale: f32,
-    width: f32,
-    body: Color,
-    head: Color,
-    accent: Color,
-    phase: f32,
-    gun: bool,
-}
-
-/// Spawn a box figure and return its parent entity (caller tags it — `EnemyView`
-/// for pooled enemies, `DynamicEntity` for the naive player). Legs/arms carry a
-/// [`Limb`] so a pooled figure can walk-bob without respawning; the initial
-/// swing is baked from `f.phase` for figures that never animate (the player,
-/// which respawns each frame anyway).
-fn spawn_figure(
-    commands: &mut Commands,
-    assets: &RenderAssets,
-    painter: &mut Painter,
-    ground: Vec3,
-    yaw: f32,
-    f: &FigureSpec,
-) -> Entity {
-    let s = f.scale;
-    let w = f.width;
-    let swing = f.phase.sin();
-    let body = painter.mat(f.body);
-    let head = painter.mat(f.head);
-    let accent = painter.mat(f.accent);
-    let gun_mat = painter.mat(Color::srgb(0.12, 0.12, 0.14));
-    let cube = &assets.cube;
-
-    // Precompute part transforms (local space, relative to feet at y=0).
-    let leg = Vec3::new(0.42 * s, 0.75 * s, 0.5 * s);
-    let leg_y = 0.375 * s;
-    let torso = Vec3::new(1.0 * s * w, 0.9 * s, 0.62 * s);
-    let torso_y = 0.75 * s + 0.45 * s;
-    let arm = Vec3::new(0.28 * s, 0.82 * s, 0.4 * s);
-    let arm_x = 0.5 * s * w + 0.2 * s;
-    let head_sz = Vec3::new(0.64 * s, 0.6 * s, 0.62 * s);
-    let head_y = 0.75 * s + 0.9 * s + 0.3 * s;
-    let eye = Vec3::new(0.14 * s, 0.14 * s, 0.06 * s);
-    let eye_z = 0.31 * s + 0.02;
-    let leg_amp = 0.18 * s;
-    let arm_amp = 0.2 * s;
-
-    commands
-        .spawn((
-            Transform::from_translation(ground).with_rotation(Quat::from_rotation_y(yaw)),
-            Visibility::default(),
-        ))
-        .with_children(|p| {
-            let mut cuboid = |t: Vec3, size: Vec3, mat: &Handle<StandardMaterial>| {
-                p.spawn((
-                    Mesh3d(cube.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_translation(t).with_scale(size),
-                ));
-            };
-            // Head + eyes (accent on the +Z front, showing the heading).
-            cuboid(Vec3::new(0.0, head_y, 0.0), head_sz, &head);
-            cuboid(Vec3::new(-0.16 * s, head_y + 0.06 * s, eye_z), eye, &accent);
-            cuboid(Vec3::new(0.16 * s, head_y + 0.06 * s, eye_z), eye, &accent);
-            // Torso.
-            cuboid(Vec3::new(0.0, torso_y, 0.0), torso, &body);
-            // Gun: a dark barrel jutting forward from the right hand.
-            if f.gun {
-                cuboid(
-                    Vec3::new(arm_x, torso_y - 0.05 * s, 0.4 * s),
-                    Vec3::new(0.16 * s, 0.16 * s, 0.9 * s),
-                    &gun_mat,
-                );
-            }
-            // Legs + arms carry a Limb so the walk-bob can animate them in place.
-            // Legs shuffle fore/aft in antiphase; arms swing opposite the legs.
-            let mut limb = |t: Vec3, size: Vec3, amp_z: f32| {
-                p.spawn((
-                    Mesh3d(cube.clone()),
-                    MeshMaterial3d(body.clone()),
-                    Transform::from_translation(t).with_scale(size),
-                    Limb { amp_z },
-                ));
-            };
-            limb(Vec3::new(-0.30 * s, leg_y, leg_amp * swing), leg, leg_amp);
-            limb(Vec3::new(0.30 * s, leg_y, -leg_amp * swing), leg, -leg_amp);
-            limb(Vec3::new(-arm_x, torso_y - 0.02 * s, -arm_amp * swing), arm, -arm_amp);
-            limb(Vec3::new(arm_x, torso_y - 0.02 * s, arm_amp * swing), arm, arm_amp);
-        })
-        .id()
-}
-
 /// Fill-bar thickness (height, depth) in world units — the backing pads this.
 const HEALTH_BAR_H: f32 = 0.1;
 const HEALTH_BAR_D: f32 = 0.06;
@@ -887,19 +756,13 @@ fn health_bar(content: &GameContent, e: &EnemyInstance) -> Option<HealthBar> {
     if max <= 0.0 || cur >= max {
         return None;
     }
-    let id = content
-        .0
-        .enemies
-        .get(e.archetype)
-        .map(|a| a.id.as_str())
-        .unwrap_or("");
-    let (_, scale, _) = enemy_shape(id);
+    let (_, scale) = character::enemy_visual(enemy_id(content, e));
     let frac = (cur / max).clamp(0.0, 1.0);
-    let bar_w = (scale * 2.4).max(0.5);
+    let bar_w = (character::char_height(scale) * 0.9).max(0.5);
     Some(HealthBar {
         x: e.x,
         y: e.y,
-        bar_y: figure_top(scale) + 0.16,
+        bar_y: character::char_height(scale) + 0.2,
         bar_w,
         fill_w: (bar_w * frac).max(0.001),
         fill_color: Color::srgb((1.0 - frac).min(1.0), frac.min(1.0), 0.15),
@@ -917,7 +780,13 @@ fn spawn_health_bar(
     id: u64,
     b: &HealthBar,
 ) {
-    let back = painter.mat(Color::srgb(0.05, 0.05, 0.06));
+    // Bars are unlit — indicators should read at a constant brightness, not fall
+    // into shadow with the geometry around them.
+    let back = painter.materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.05, 0.06),
+        unlit: true,
+        ..default()
+    });
     let fill = painter.materials.add(StandardMaterial {
         base_color: b.fill_color,
         unlit: true,
@@ -966,20 +835,7 @@ fn spawn_drop(commands: &mut Commands, assets: &RenderAssets, painter: &mut Pain
     ));
 }
 
-// ---- Pure helpers (shape / color / hash) --------------------------------
-
-/// (color, scale, torso-width) per enemy archetype.
-fn enemy_shape(id: &str) -> (Color, f32, f32) {
-    match id {
-        "swarm_rusher" => (Color::srgb(0.80, 0.50, 0.30), 0.28, 0.85),
-        "fast_zombie" => (Color::srgb(0.90, 0.70, 0.20), 0.30, 0.8),
-        "spitter" => (Color::srgb(0.50, 0.80, 0.40), 0.34, 1.0),
-        "basic_zombie" => (Color::srgb(0.75, 0.25, 0.25), 0.38, 1.0),
-        "fat_zombie" => (Color::srgb(0.55, 0.20, 0.50), 0.52, 1.7),
-        "patient_zero" => (Color::srgb(0.95, 0.10, 0.10), 0.80, 1.4),
-        _ => (Color::srgb(0.75, 0.25, 0.25), 0.38, 1.0),
-    }
-}
+// ---- Pure helpers (color / hash) ----------------------------------------
 
 pub(crate) fn rarity_color(r: Rarity) -> Color {
     match r {
@@ -989,22 +845,6 @@ pub(crate) fn rarity_color(r: Rarity) -> Color {
         Rarity::Epic => Color::srgb(0.70, 0.30, 1.00),
         Rarity::Legendary => Color::srgb(1.00, 0.50, 0.10),
     }
-}
-
-/// Lighten a color toward white by `amt` (0..1) — head vs body.
-fn lighten(c: Color, amt: f32) -> Color {
-    let s = c.to_srgba();
-    Color::srgb(
-        s.red + (1.0 - s.red) * amt,
-        s.green + (1.0 - s.green) * amt,
-        s.blue + (1.0 - s.blue) * amt,
-    )
-}
-
-/// Approximate top of a figure's head for `scale` — where world-aligned
-/// overlays anchor above it.
-fn figure_top(scale: f32) -> f32 {
-    scale * 2.3
 }
 
 /// Deterministic tile hash (SplitMix64-style mix of tile coords + map seed).

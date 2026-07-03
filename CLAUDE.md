@@ -8,7 +8,7 @@ Target: **desktop-first** — native builds for Windows / macOS / Linux. Single-
 >
 > The two repos are **duplicate-and-diverge**, not a shared workspace: shared logic (`core`, `content`, `procgen`, the engine-agnostic `game` World/sim) was copied in and now evolves independently here. Genuine bugfixes to shared logic get hand-ported between repos.
 >
-> **Migration status (2026-07-02): COMPLETE.** The `game` crate now runs entirely on **Bevy 0.19** — window/camera, input (`bevy_input` + `bevy_gilrs`), 3D scene (`scene.rs`), HUD + inventory (`bevy_ui`, `hud.rs`), and the debug tuning overlay (`bevy_egui`, `debug.rs`, `--features debug`). **macroquad is fully removed** from the workspace. The headless simulation (`game/lib.rs` — World, tick, `Command` stream) ported unchanged, as planned. Crates were renamed `bigbox-*` / `bb_*` in Phase 0. The next epic is the *payoff* the move unlocked: GLTF/PBR/lighting/skeletal-animation/hot-reload (see "Deferred epic" at the end). Full phase log in `.attic/migration/plan.md`.
+> **Migration status (2026-07-02): COMPLETE.** The `game` crate now runs entirely on **Bevy 0.19** — window/camera, input (`bevy_input` + `bevy_gilrs`), 3D scene (`scene.rs`), HUD + inventory (`bevy_ui`, `hud.rs`), and the debug tuning overlay (`bevy_egui`, `debug.rs`, `--features debug`). **macroquad is fully removed** from the workspace. The headless simulation (`game/lib.rs` — World, tick, `Command` stream) ported unchanged, as planned. Crates were renamed `bigbox-*` / `bb_*` in Phase 0. The *payoff* the move unlocked — GLTF/PBR/lighting/skeletal-animation/hot-reload — is now also **done** (2026-07-03; see "Rendering fidelity epic" at the end). Full phase log in `.attic/migration/plan.md`.
 
 ---
 
@@ -360,13 +360,15 @@ Deliberately tight. Expand only after this is fun. Status markers track current 
 
 ---
 
-## Deferred epic: rendering fidelity (the payoff the Bevy move unlocks)
+## Rendering fidelity epic — DONE (2026-07-03)
 
-The macroquad → Bevy migration (phases 0–5, complete 2026-07-02) deliberately **replicated the old boxy-primitive look** — same flat colors, stacked cubes, no lighting — so any regression was obviously a port bug, not new art. That's parity, not the point. The reason for the move was the *rendering/assets ceiling* macroquad couldn't clear; cashing that in is the next epic, a separate body of work:
+The macroquad → Bevy migration (phases 0–5, complete 2026-07-02) deliberately **replicated the old boxy-primitive look** so any regression was obviously a port bug, not new art. Cashing in the rendering/assets ceiling that motivated the move is now **complete** — the flat-unlit-cube parity build is gone:
 
-- **GLTF/GLB import with skeletal animation** — real character models + animation clips (replace the stacked-cube box-people), via `bevy_gltf` + the animation graph.
-- **PBR materials + lighting + shadows** — currently every material is `unlit: true` with `Tonemapping::None` to match macroquad's flat look. Turn on real lights, PBR, shadow maps; retune colors for the lit pipeline.
-- **Asset pipeline + hot-reload** — load models/textures/audio through Bevy's `AssetServer` (dev hot-reload), instead of the `include_bytes!`/`include_str!` embeds inherited for a self-contained binary.
-- **Cube wireframe edges** — the one deliberate parity gap: macroquad's `draw_cube_wires` black outlines weren't reproduced (unlit flat cubes). Moot once real models/lighting land; revisit only if the boxy look is kept.
+- ✅ **GLTF import + node animation** — the stacked-cube box-people are replaced by Kenney's CC0 **rigged blocky characters** (`assets/characters/kennys/character-{a..r}.glb`, 18 letters, node-animated, no skin). `game/src/character.rs` owns loading + the animation layer: per-letter `AnimationGraph` built from the glb's clips (idle / walk / sprint / holding-both-shoot / attack-melee / die), an `attach_char_animation` system wires each freshly-spawned model's `AnimationPlayer` to its graph, and `drive_char_animation` cross-fades to the `CharModel.state` the reconcile sets each frame (idle↔walk↔sprint from ground speed, hold-gun / shoot for the player off the fire-cooldown rising edge, melee for enemies in range). Archetype→character+scale mapping is a single data table (`enemy_visual`), trivially retunable.
+- ✅ **PBR + lighting + shadows** — `unlit: true` and `Tonemapping::None` are gone. An angled `DirectionalLight` (shadows on) + sky-tinted `AmbientLight` (camera component) light the scene; walls/props/floor use matte lit `StandardMaterial`s. Health bars + the explosion blast stay `unlit` on purpose (indicators / fake glow).
+- ✅ **Asset pipeline + hot-reload** — models/textures load through the `AssetServer` (`AssetPlugin.file_path` → the crate's `assets/`, `watch_for_changes_override` on for dev hot-reload), not `include_bytes!`. (Content RON + the HUD font are still embedded; packaging will ship an `assets/` dir beside the binary.)
+- **Cube wireframe edges** — moot; real models/lighting landed.
 
-Do this **after** the game is confirmed fun on the parity build, and treat it as its own project (art direction, asset sourcing) — not migration cleanup. The **SpacetimeDB coop spike** (see Multiplayer posture) is an independent parallel track.
+**Bevy 0.19 gotcha (load-bearing, don't relearn the hard way):** GLTF scenes are **not** the old `bevy_scene::Scene`/`SceneRoot`. 0.19 rewrote the scene system — GLTF loads as a `bevy::world_serialization::WorldAsset` spawned via `WorldAssetRoot(Handle<WorldAsset>)` (feature `bevy_world_serialization`). The spawner instantiates baked components **by reflection**, so with our trimmed `default-features = false` Bevy every baked type must be in the `AppTypeRegistry` or it panics ("unregistered type … register with `app.register_type::<T>()`"). `main.rs::register_gltf_types` registers the set (Transform + TransformTreeChanged + GlobalTransform, Visibility trio, Name, ChildOf/Children, Mesh3d, MeshMaterial3d<StandardMaterial>, Aabb, the `Gltf*` extras, AnimationPlayer/AnimatedBy/AnimationTargetId). GLTF animation loading is gated behind the umbrella feature **`gltf_animation`** (not plain `bevy_animation`) — without it the loader emits no `Animation{n}` clip assets.
+
+The **SpacetimeDB coop spike** (see Multiplayer posture) remains an independent parallel track.

@@ -36,6 +36,16 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_core_pipeline",
     "bevy_pbr",
     "bevy_gltf",
+    # GLTF models load as `WorldAsset`s spawned via `WorldAssetRoot` (Bevy 0.19's
+    # scene system) — this feature provides that type + its spawner plugin.
+    "bevy_world_serialization",
+    # GLTF node/skeletal animation. `gltf_animation` is the load-bearing one: it
+    # pulls `bevy_animation` *and* flips `bevy_gltf`'s animation support on, so the
+    # loader actually emits `Animation{n}` clip assets from the glb.
+    "gltf_animation",
+    # Dev asset hot-reload (filesystem watcher). Lets model/texture edits refresh
+    # in a running game; harmless in release (we just don't enable watching).
+    "file_watcher",
     "bevy_winit",
     "bevy_ui",
     # UI layout/interaction (`bevy_ui`) and UI *rendering* are split in 0.19 —

@@ -1,0 +1,10 @@
+Blocky Characters — Kenney (https://kenney.nl/assets/blocky-characters)
+
+License: Creative Commons Zero (CC0 1.0 Universal) — public domain.
+You may use, modify, and redistribute these freely, no attribution required.
+Credit is given here as a courtesy.
+
+These are CC0 placeholder art (see CLAUDE.md "Custom art is out of scope").
+Each character-{a..r}.glb is a rigged, node-animated blocky humanoid sharing a
+common animation set (idle / walk / sprint / holding-both-shoot / attack / die /
+…); textures live in Textures/texture-{a..r}.png.
